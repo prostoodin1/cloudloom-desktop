@@ -6,10 +6,10 @@ A desktop file manager for multiple cloud accounts, with a profile picker, light
 
 See [Releases](https://github.com/prostoodin1/cloudloom-desktop/releases).
 
-- **Cloudloom_Bloom_Windows_x64_Setup.exe** — Windows 10/11 x64 installer, including WebView2 runtime setup when needed.
-- **Cloudloom_Bloom_Windows_x64_Portable.zip** — extract all files, keep the resources folder and run cloudloom.exe. Requires WebView2 Runtime.
-- **Cloudloom_Bloom_macOS_Intel.dmg** — Intel Macs (x86_64).
-- **Cloudloom_Bloom_macOS_AppleSilicon.dmg** — Apple Silicon (M-series, ARM64), native build, no Rosetta required.
+- [**Download Windows installer**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Bloom_Windows_x64_Setup.exe) — Windows 10/11 x64, including WebView2 runtime setup when needed.
+- [**Download Windows portable ZIP**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Bloom_Windows_x64_Portable.zip) — extract all files, keep the resources folder and run cloudloom.exe. Requires WebView2 Runtime.
+- [**Download Mac Intel DMG**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Bloom_macOS_Intel.dmg) — Intel Macs (x86_64).
+- [**Download Mac Apple Silicon DMG**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Bloom_macOS_AppleSilicon.dmg) — M-series, ARM64, native build, no Rosetta required.
 - ZIP application bundles and SHA256 checksums are also provided.
 
 Requires **macOS 13 Ventura or later**. Open the DMG and copy Cloudloom into Applications.
