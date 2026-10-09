@@ -1,0 +1,31 @@
+mod engine;
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            use tauri::Manager;
+            let state = engine::initialize(app.handle()).map_err(std::io::Error::other)?;
+            app.manage(state);
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            engine::list_profiles,
+            engine::list_tasks,
+            engine::connect_profile,
+            engine::continue_connect,
+            engine::cancel_connect,
+            engine::disconnect_profile,
+            engine::list_files,
+            engine::create_folder,
+            engine::rename_item,
+            engine::delete_item,
+            engine::start_transfer,
+            engine::cancel_transfer,
+            engine::local_is_directory,
+            engine::open_service_help,
+        ])
+        .run(tauri::generate_context!())
+        .expect("Cloudloom could not start");
+}

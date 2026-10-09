@@ -1,0 +1,10 @@
+{
+  "bundle": {
+    "targets": ["app", "dmg"],
+    "resources": ["resources/rclone", "resources/RCLONE-LICENSE.txt"],
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "signingIdentity": "-"
+    }
+  }
+}
