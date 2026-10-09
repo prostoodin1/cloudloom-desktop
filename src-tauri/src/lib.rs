@@ -1,4 +1,5 @@
 mod engine;
+mod preview;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -25,6 +26,10 @@ pub fn run() {
             engine::cancel_transfer,
             engine::local_is_directory,
             engine::open_service_help,
+            preview::storage_usage,
+            preview::prepare_preview,
+            preview::close_preview,
+            preview::save_preview_text,
         ])
         .run(tauri::generate_context!())
         .expect("Cloudloom could not start");

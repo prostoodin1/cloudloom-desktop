@@ -3,7 +3,9 @@ import { listen } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { ArrowDownToLine, ArrowLeft, ArrowUpToLine, Check, ChevronRight, CircleHelp, Cloud, Cloudy, Download, ExternalLink, File, FileAudio, FileImage, FileText, Film, Folder, FolderPlus, Grid2X2, HardDrive, LayoutList, LoaderCircle, LogOut, Menu, Moon, MoreHorizontal, Plus, RefreshCw, Search, Settings2, Sun, Trash2, Upload, Users, X } from 'lucide-react'
-import { call, desktop, providers, service, type ConnectReply, type Entry, type Profile, type Task } from './api'
+import { call, desktop, providers, service, type ConnectReply, type Entry, type Profile, type Task, type StorageUsage } from './api'
+import { FilePreview } from './FilePreview'
+import { usageLabel, usagePercent } from './lib/storage'
 import { formatBytes } from './lib/format'
 import { guides, guideUrl, releaseName } from './services'
 import './App.css'
@@ -52,11 +54,35 @@ export default function App() {
   const [actionBusy, setActionBusy] = useState(false)
   const [toast, setToast] = useState('')
   const [dragging, setDragging] = useState(false)
+  const [usage, setUsage] = useState<Record<string, StorageUsage>>({})
+  const [preview, setPreview] = useState<{ entry: Entry; profileId: string; remotePath: string } | null>(null)
   const loadSequence = useRef(0)
   const current = useRef({ profile, path, choose })
   const reloadRef = useRef<() => void>(() => {})
   const uploadRef = useRef<(paths: string[]) => void>(() => {})
   const notify = (message: string) => setToast(message)
+
+  useEffect(() => {
+    if (!desktop || !profiles.length) return
+    let disposed = false
+    let running = false
+    const refresh = async () => {
+      if (running) return
+      running = true
+      try {
+        // Keep quota requests bounded; do not block browsing on unsupported providers.
+        for (let offset = 0; offset < profiles.length && !disposed; offset += 3) {
+          await Promise.all(profiles.slice(offset, offset + 3).map(async p => {
+            const value = await call<StorageUsage>('storage_usage', { id: p.id }).catch(() => ({ used: null, total: null, free: null, message: 'Квота временно недоступна' }))
+            if (!disposed) setUsage(current => ({ ...current, [p.id]: value }))
+          }))
+        }
+      } finally { running = false }
+    }
+    void refresh()
+    const timer = window.setInterval(() => void refresh(), 60000)
+    return () => { disposed = true; clearInterval(timer) }
+  }, [profiles])
 
   useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem('cloudloom-theme', theme) }, [theme])
   useEffect(() => { localStorage.setItem('cloudloom-view', view) }, [view])
@@ -117,6 +143,7 @@ export default function App() {
     try { await call('disconnect_profile', { id: p.id }); setProfiles(items => items.filter(item => item.id !== p.id)); if (profile?.id === p.id) { setProfile(null); setEntries([]) }; notify('Профиль отключён. Данные в облаке сохранены.') } catch(e) { setError(String(e)) }
   }
   const toggle = (entry: Entry) => setSelected(items => { const next = new Set(items); if (next.has(entry.path)) next.delete(entry.path); else next.add(entry.path); return next })
+  const openPreview = (entry: Entry) => { if (profile && !entry.isDir) setPreview({ entry, profileId: profile.id, remotePath: pathJoin(path, entry.path) }) }
   const upload = async (folder: boolean) => {
     try {
       const paths = await open({ multiple: !folder, directory: folder, title: folder ? 'Выберите папку для загрузки' : 'Выберите файлы для загрузки' })
@@ -163,20 +190,21 @@ export default function App() {
   }
 
   return <div className={`app ${choose ? 'choosing' : ''}`}>
-    <div className="workspace" aria-hidden={choose ? true : undefined} inert={choose || undefined}>
+    <div className="workspace" aria-hidden={choose || preview ? true : undefined} inert={choose || !!preview || undefined}>
       <aside className="sidebar">
         <Brand />
         <p className="section-label">ПРОСТРАНСТВО</p>
         <button className="nav active" onClick={() => setShowTransfers(false)}><HardDrive size={18}/>Мои файлы</button>
         <button className="nav" onClick={() => setShowTransfers(v => !v)}><ArrowUpToLine size={18}/>Передачи{activeTasks.length > 0 && <span className="count">{activeTasks.length}</span>}</button>
         <p className="section-label profile-label">МОИ ПРОФИЛИ</p>
-        {profiles.map(p => <button key={p.id} className={`profile-nav ${profile?.id === p.id ? 'selected' : ''}`} onClick={() => enter(p)}><ServiceIcon id={p.provider}/><span><strong>{p.name}</strong><small>{service(p.provider).name}</small></span><i/></button>)}
+        {profiles.map(p => <button key={p.id} className={`profile-nav ${profile?.id === p.id ? 'selected' : ''}`} onClick={() => enter(p)}><ServiceIcon id={p.provider}/><span><strong>{p.name}</strong><small>{service(p.provider).name}</small><StorageMeter usage={usage[p.id]}/></span><i/></button>)}
         <button className="add-profile" onClick={() => setChoose(true)}><Plus size={16}/>Добавить профиль</button>
         <div className="sidebar-bottom"><div className="privacy"><Cloud size={17}/><span>Ваши файлы — в вашем облаке.<br/>Прямое соединение с хранилищем.</span></div><button className="theme-button" onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={17}/> : <Moon size={17}/>}<span>{theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'}</span><small>{releaseName}</small></button></div>
       </aside>
       <main>
         <header className="topbar"><div className="breadcrumb"><Cloud size={17}/><span>{profile?.name ?? 'Ваше пространство'}</span><ChevronRight size={14}/><strong>{path.split('/').pop() || 'Мои файлы'}</strong></div><div className="header-buttons"><span className="connection-state"><i/>Подключено</span><button className="round" title="Выбрать профиль" aria-label="Выбрать профиль" onClick={() => setChoose(true)}><Menu size={19}/></button></div></header>
         <section className="files-content">
+          {profile && <div className="active-storage"><HardDrive size={15}/><span>{profile.name} · <StorageMeter usage={usage[profile.id]}/></span><small>Квота аккаунта / диска · обновление раз в минуту</small></div>}
           <div className="files-heading"><div><p className="eyebrow">{profile ? service(profile.provider).name : 'CLOUDLOOM'}</p><h1>{path.split('/').pop() || 'Мои файлы'}<span>{entries.length}</span></h1><p className="description">{profile?.root ? `${profile.name} / ${profile.root}` : 'Всё нужное. В одном пространстве.'}</p></div><div className="file-actions"><button className="button subtle" onClick={() => { setText(''); setPrompt({kind:'folder'}) }} disabled={profile?.provider === 'google cloud storage'} title={profile?.provider === 'google cloud storage' ? 'В GCS папки создаются загрузкой объектов с префиксом' : undefined}><FolderPlus size={17}/>Новая папка</button><details className="upload-menu"><summary className="button primary"><Upload size={17}/>Загрузить<ChevronRight size={13}/></summary><div className="dropdown"><button onClick={() => void upload(false)}><File size={16}/>Файлы</button><button onClick={() => void upload(true)}><Folder size={16}/>Папку целиком</button></div></details></div></div>
           <div className="pathbar"><button disabled={!path} aria-label="На уровень выше" onClick={() => navigate(path.split('/').slice(0,-1).join('/'))}><ArrowLeft size={16}/></button><button onClick={() => navigate('')}><HardDrive size={14}/>Корень</button>{path.split('/').filter(Boolean).map((part,index) => <span key={index}><ChevronRight size={13}/><button onClick={() => navigate(path.split('/').slice(0,index+1).join('/'))}>{part}</button></span>)}</div>
           <div className="toolbar"><label className="search"><Search size={17}/><input placeholder="Поиск в этой папке" value={query} onChange={e => setQuery(e.target.value)}/><kbd>⌕</kbd></label><select aria-label="Сортировка" value={sort} onChange={e => setSort(e.target.value)}><option value="name">По имени</option><option value="date">По дате</option><option value="size">По размеру</option></select><button className="icon-button" title="Обновить" onClick={() => void reload()} disabled={loading}><RefreshCw size={17} className={loading ? 'spin' : ''}/></button><div className="view-buttons"><button aria-label="Список" className={view === 'list' ? 'active' : ''} onClick={() => setView('list')}><LayoutList size={17}/></button><button aria-label="Сетка" className={view === 'grid' ? 'active' : ''} onClick={() => setView('grid')}><Grid2X2 size={17}/></button></div></div>
@@ -184,8 +212,8 @@ export default function App() {
           {error && <div className="error" role="alert">{error}<button aria-label="Закрыть ошибку" onClick={() => setError('')}><X size={15}/></button></div>}
           {loading ? <div className="empty"><LoaderCircle className="spin" size={28}/><h3>Открываем ваши файлы</h3><p>Получаем содержимое хранилища…</p></div> : visible.length ? <div className={view === 'grid' ? 'file-grid' : 'file-list'}>
             {view === 'list' && <div className="list-head"><label><input aria-label="Выбрать всё" type="checkbox" checked={visible.length > 0 && visible.every(e => selected.has(e.path))} onChange={e => setSelected(e.target.checked ? new Set(visible.map(item => item.path)) : new Set())}/></label><span>Название</span><span>Изменён</span><span>Размер</span><span/></div>}
-            {visible.map(entry => { const Icon = iconFor(entry); return <div className={`file-row ${selected.has(entry.path) ? 'selected' : ''}`} key={entry.path} onDoubleClick={() => entry.isDir ? navigate(pathJoin(path,entry.path)) : void download([entry])} onContextMenu={e => { e.preventDefault(); setSelected(new Set([entry.path])); const menu = e.currentTarget.querySelector('details'); if (menu) menu.open = true }}>
-              <label className="file-check"><input type="checkbox" aria-label={`Выбрать ${entry.name}`} checked={selected.has(entry.path)} onChange={() => toggle(entry)}/></label><button className="entry-name" onClick={() => entry.isDir ? navigate(pathJoin(path,entry.path)) : toggle(entry)}><span className={`file-symbol ${entry.isDir ? 'folder' : Icon === Film ? 'video' : Icon === FileAudio ? 'audio' : ''}`}><Icon size={view === 'grid' ? 32 : 21}/></span><strong>{entry.name}</strong></button><span className="file-date">{entry.modified && !entry.modified.startsWith('0001') ? new Date(entry.modified).toLocaleDateString('ru', { day:'numeric', month:'short', year:'numeric' }) : '—'}</span><span className="file-size">{entry.isDir ? 'Папка' : formatBytes(entry.size)}</span><details className="entry-menu"><summary aria-label={`Действия: ${entry.name}`}><MoreHorizontal size={18}/></summary><div className="dropdown"><button onClick={() => void download([entry])}><Download size={15}/>Скачать{entry.isDir ? ' папку' : ''}</button><button onClick={() => { setText(entry.name); setPrompt({kind:'rename',entry}) }}><Settings2 size={15}/>Переименовать</button><button className="danger-text" onClick={() => setPrompt({kind:'delete',entry})}><Trash2 size={15}/>Удалить</button></div></details>
+            {visible.map(entry => { const Icon = iconFor(entry); return <div className={`file-row ${selected.has(entry.path) ? 'selected' : ''}`} key={entry.path} onDoubleClick={() => entry.isDir ? navigate(pathJoin(path,entry.path)) : openPreview(entry)} onContextMenu={e => { e.preventDefault(); setSelected(new Set([entry.path])); const menu = e.currentTarget.querySelector('details'); if (menu) menu.open = true }}>
+              <label className="file-check"><input type="checkbox" aria-label={`Выбрать ${entry.name}`} checked={selected.has(entry.path)} onChange={() => toggle(entry)}/></label><button className="entry-name" onClick={() => entry.isDir ? navigate(pathJoin(path,entry.path)) : openPreview(entry)}><span className={`file-symbol ${entry.isDir ? 'folder' : Icon === Film ? 'video' : Icon === FileAudio ? 'audio' : ''}`}><Icon size={view === 'grid' ? 32 : 21}/></span><strong>{entry.name}</strong></button><span className="file-date">{entry.modified && !entry.modified.startsWith('0001') ? new Date(entry.modified).toLocaleDateString('ru', { day:'numeric', month:'short', year:'numeric' }) : '—'}</span><span className="file-size">{entry.isDir ? 'Папка' : formatBytes(entry.size)}</span><details className="entry-menu"><summary aria-label={`Действия: ${entry.name}`}><MoreHorizontal size={18}/></summary><div className="dropdown">{!entry.isDir && <button onClick={() => openPreview(entry)}><FileText size={15}/>Открыть</button>}<button onClick={() => void download([entry])}><Download size={15}/>Скачать{entry.isDir ? ' папку' : ''}</button><button onClick={() => { setText(entry.name); setPrompt({kind:'rename',entry}) }}><Settings2 size={15}/>Переименовать</button><button className="danger-text" onClick={() => setPrompt({kind:'delete',entry})}><Trash2 size={15}/>Удалить</button></div></details>
             </div> })}
           </div> : <div className="empty"><div className="empty-icon"><Folder size={34}/></div><h3>{query ? 'Ничего не найдено' : 'Здесь пока пусто'}</h3><p>{query ? 'Попробуйте другой поисковый запрос.' : 'Загрузите файлы или перетащите сюда папку.'}</p>{!query && <button className="button subtle" onClick={() => void upload(false)}><Plus size={16}/>Добавить файлы</button>}</div>}
           <footer className="file-footer"><span>{visible.length} элементов{selected.size ? ` · Выбрано ${selected.size}` : ''}</span><span><Cloud size={13}/>Обновлено с сервиса</span></footer>
@@ -221,9 +249,14 @@ export default function App() {
     </div></div>}
     {prompt && <div className="modal-backdrop"><form className="modal action-modal" role="dialog" aria-modal="true" onSubmit={e => { e.preventDefault(); void submitAction() }}><button type="button" className="modal-close" aria-label="Закрыть диалог" disabled={actionBusy} onClick={() => setPrompt(null)}><X size={18}/></button><h2>{prompt.kind === 'folder' ? 'Новая папка' : prompt.kind === 'rename' ? 'Переименовать' : 'Удалить выбранное?'}</h2>{prompt.kind === 'delete' ? <p className="modal-subtitle">{prompt.entry ? prompt.entry.name : `${picked.length} элементов`}. Папки удаляются вместе со всем содержимым. Восстановление зависит от сервиса.</p> : <label>Название<input autoFocus required value={text} onChange={e => setText(e.target.value)}/></label>}<div className="dialog-actions"><button type="button" className="button subtle" disabled={actionBusy} onClick={() => setPrompt(null)}>Отмена</button><button className={`button ${prompt.kind === 'delete' ? 'danger' : 'primary'}`} disabled={actionBusy || (prompt.kind !== 'delete' && !text.trim())}>{actionBusy && <LoaderCircle size={15} className="spin"/>}{prompt.kind === 'delete' ? 'Удалить' : 'Сохранить'}</button></div>{error && <p className="error">{error}</p>}</form></div>}
     {dragging && !choose && <div className="drop-overlay"><Upload size={40}/><h2>Отпустите, чтобы загрузить</h2><p>Файлы и папки попадут в текущую папку</p></div>}
+    {preview && <FilePreview profileId={preview.profileId} remotePath={preview.remotePath} entry={preview.entry} onClose={() => setPreview(null)} onSaved={() => { void reload(); setProfiles(items => [...items]) }} onDownload={() => void download([preview.entry])}/>}
     {toast && <div className="toast" role="status"><Check size={16}/>{toast}</div>}
   </div>
 }
 
+function StorageMeter({ usage }: { usage?: StorageUsage }) {
+  const percent = usagePercent(usage)
+  return <span className="storage-meter" title={usage?.message ?? 'Объём аккаунта или диска, сообщённый сервисом'}><small>{usageLabel(usage)}</small>{percent !== null && <progress aria-label="Занято места" max={100} value={percent}/>}</span>
+}
 function Brand() { return <div className="brand"><span className="brand-logo"><Cloudy size={23}/></span><strong>cloudloom<span>®</span></strong></div> }
 function ServiceIcon({id}:{id:string}) { const p = service(id); return <span className={`service-icon service-${id.replaceAll(' ','-')}`} style={{'--service':p.color} as React.CSSProperties}>{id === 'drive' ? <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path fill="#25a65a" d="M8 2h8L5 21 1 14z"/><path fill="#f6c344" d="M8 2h8l8 14h-8z"/><path fill="#4285f4" d="M5 21l4-7h15l-4 7z"/></svg> : id === 'onedrive' ? <Cloud size={25} fill="currentColor"/> : id === 'alias' ? <HardDrive size={22}/> : p.letters}</span> }

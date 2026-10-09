@@ -60,13 +60,14 @@ struct Pending {
 }
 pub struct Engine {
     binary: PathBuf,
-    directory: PathBuf,
+    pub(crate) directory: PathBuf,
     password: String,
     profiles: Mutex<Vec<Profile>>,
     pending: tokio::sync::Mutex<HashMap<String, Pending>>,
     tasks: Mutex<Vec<Task>>,
     cancel: Mutex<HashMap<String, Arc<Notify>>>,
     slots: Arc<Semaphore>,
+    pub(crate) previews: tokio::sync::Mutex<HashMap<String, crate::preview::Session>>,
 }
 
 fn err(e: impl std::fmt::Display) -> String {
@@ -93,7 +94,7 @@ fn safe_path(value: &str) -> Result<(), String> {
     }
     Ok(())
 }
-fn remote(profile: &Profile, path: &str) -> Result<String, String> {
+pub(crate) fn remote(profile: &Profile, path: &str) -> Result<String, String> {
     safe_path(path)?;
     Ok(format!(
         "storage:{}",
@@ -165,13 +166,14 @@ pub fn initialize(app: &AppHandle) -> Result<Engine, String> {
         tasks: Mutex::new(tasks),
         cancel: Mutex::new(HashMap::new()),
         slots: Arc::new(Semaphore::new(3)),
+        previews: tokio::sync::Mutex::new(HashMap::new()),
     })
 }
 impl Engine {
     fn config(&self, id: &str) -> PathBuf {
         self.directory.join(format!("{id}.conf"))
     }
-    fn command(&self, id: &str) -> Command {
+    pub(crate) fn command(&self, id: &str) -> Command {
         let mut cmd = Command::new(&self.binary);
         cmd.args([
             "--config",
@@ -187,7 +189,7 @@ impl Engine {
         cmd.creation_flags(0x08000000);
         cmd
     }
-    async fn execute(&self, id: &str, args: Vec<String>) -> Result<String, String> {
+    pub(crate) async fn execute(&self, id: &str, args: Vec<String>) -> Result<String, String> {
         let output = tokio::time::timeout(
             Duration::from_secs(300),
             self.command(id).args(args).output(),
@@ -202,7 +204,7 @@ impl Engine {
         }
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
-    fn profile(&self, id: &str) -> Result<Profile, String> {
+    pub(crate) fn profile(&self, id: &str) -> Result<Profile, String> {
         self.profiles
             .lock()
             .map_err(err)?
@@ -241,7 +243,7 @@ impl Engine {
         let _ = app.emit("transfer", task);
     }
 }
-fn classify_error(text: &str) -> String {
+pub(crate) fn classify_error(text: &str) -> String {
     let lower = text.to_lowercase();
     if lower.contains("invalid_grant")
         || lower.contains("unauthorized")
@@ -1003,6 +1005,7 @@ mod tests {
             tasks: Mutex::new(vec![]),
             cancel: Mutex::new(HashMap::new()),
             slots: Arc::new(Semaphore::new(3)),
+            previews: tokio::sync::Mutex::new(HashMap::new()),
         };
         let id = "test";
         std::fs::write(engine.config(id), "").unwrap();
@@ -1111,6 +1114,65 @@ mod tests {
             .await
             .unwrap();
         assert!(!storage.join("Папка").exists());
+        // Exercise the same bounded download/save pipeline used by every provider.
+        engine.profiles.lock().unwrap().push(Profile {
+            id: id.into(),
+            name: "Test".into(),
+            provider: "alias".into(),
+            root: "".into(),
+            ready: true,
+        });
+        let initial = "Привет\r\nредактор\r\n".as_bytes().to_vec();
+        std::fs::write(storage.join("note.txt"), &initial).unwrap();
+        let cache = directory.join("preview.txt");
+        engine
+            .preview_download(id, "storage:note.txt", &cache, 2 * 1024 * 1024)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&cache).unwrap(), initial);
+        let mut session = crate::preview::Session {
+            profile_id: id.into(),
+            remote: "storage:note.txt".into(),
+            local: cache,
+            original: Some(initial),
+        };
+        engine
+            .save_text_session(&mut session, "Правки в облаке\r\n".into())
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(storage.join("note.txt")).unwrap(),
+            "Правки в облаке\r\n"
+        );
+        // Same-size content changes must not be skipped by size/mtime heuristics.
+        engine
+            .save_text_session(&mut session, "Правки в Облаке\r\n".into())
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(storage.join("note.txt")).unwrap(),
+            "Правки в Облаке\r\n"
+        );
+        std::fs::write(storage.join("note.txt"), "Чужие правки").unwrap();
+        assert!(
+            engine
+                .save_text_session(&mut session, "Не затирать".into())
+                .await
+                .unwrap_err()
+                .contains("изменился")
+        );
+        assert_eq!(
+            std::fs::read_to_string(storage.join("note.txt")).unwrap(),
+            "Чужие правки"
+        );
+        let bounded = directory.join("bounded.txt");
+        assert!(
+            engine
+                .preview_download(id, "storage:note.txt", &bounded, 3)
+                .await
+                .is_err()
+        );
+        assert!(!bounded.exists());
         // This directory was created by this test, outside all user storage.
         std::fs::remove_dir_all(directory).unwrap();
     }

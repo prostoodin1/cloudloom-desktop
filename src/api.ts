@@ -1,6 +1,8 @@
 import { invoke, isTauri } from '@tauri-apps/api/core'
 export interface Profile { id: string; name: string; provider: string; root: string; ready: boolean }
 export interface Entry { name: string; path: string; size: number; isDir: boolean; modified: string; mime: string }
+export interface StorageUsage { used: number | null; total: number | null; free: number | null; message: string | null }
+export interface PreviewData { token: string; kind: 'image' | 'video' | 'audio' | 'text'; localPath: string | null; text: string | null }
 export interface Task { id: string; profileId: string; name: string; direction: string; status: string; bytes: number; total: number; speed: number; error?: string }
 export interface Question { name: string; help: string; default: unknown; password: boolean; exclusive: boolean; examples: { Value: string; Help: string }[] | null }
 export interface ConnectReply { profile?: Profile; id?: string; question?: Question; error?: string }

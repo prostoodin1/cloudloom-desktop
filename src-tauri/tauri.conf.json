@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Cloudloom",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "identifier": "studio.red.cloudloom",
   "build": {
     "frontendDist": "../dist",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Cloudloom Bloom",
+        "title": "Cloudloom Glimmer",
         "width": 1440,
         "height": 900,
         "minWidth": 780,
@@ -22,7 +22,8 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost; media-src asset: http://asset.localhost; connect-src ipc: http://ipc.localhost; object-src 'none'; frame-src 'none'",
+      "assetProtocol": { "enable": true, "scope": [] }
     }
   },
   "bundle": {

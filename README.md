@@ -1,4 +1,4 @@
-# Cloudloom Bloom
+# Cloudloom Glimmer
 
 A desktop file manager for multiple cloud accounts, with a profile picker, light/dark themes, real file/folder transfers and per-service setup help.
 
@@ -6,10 +6,10 @@ A desktop file manager for multiple cloud accounts, with a profile picker, light
 
 See [Releases](https://github.com/prostoodin1/cloudloom-desktop/releases).
 
-- [**Download Windows installer**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Bloom_Windows_x64_Setup.exe) — Windows 10/11 x64, including WebView2 runtime setup when needed.
-- [**Download Windows portable ZIP**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Bloom_Windows_x64_Portable.zip) — extract all files, keep the resources folder and run cloudloom.exe. Requires WebView2 Runtime.
-- [**Download Mac Intel DMG**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Bloom_macOS_Intel.dmg) — Intel Macs (x86_64).
-- [**Download Mac Apple Silicon DMG**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Bloom_macOS_AppleSilicon.dmg) — M-series, ARM64, native build, no Rosetta required.
+- [**Download Windows installer**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Glimmer_Windows_x64_Setup.exe) — Windows 10/11 x64, including WebView2 runtime setup when needed.
+- [**Download Windows portable ZIP**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Glimmer_Windows_x64_Portable.zip) — extract all files, keep the resources folder and run cloudloom.exe. Requires WebView2 Runtime.
+- [**Download Mac Intel DMG**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Glimmer_macOS_Intel.dmg) — Intel Macs (x86_64).
+- [**Download Mac Apple Silicon DMG**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Glimmer_macOS_AppleSilicon.dmg) — M-series, ARM64, native build, no Rosetta required.
 - ZIP application bundles and SHA256 checksums are also provided.
 
 Requires **macOS 13 Ventura or later**. Open the DMG and copy Cloudloom into Applications.
@@ -18,6 +18,9 @@ These initial Mac builds are **ad-hoc signed, not Apple Developer ID signed or n
 
 ## Features
 
+- Account/disk used/total storage in the profile sidebar and active profile header, refreshed every minute. Unsupported quotas stay unknown; no recursive file scans or invented totals.
+- Open files inside the app: images, video/audio with seeking and a UTF-8 text editor with Save / Ctrl+S / Cmd+S. Downloads a temporary local copy first, not instant remote streaming. Media up to 1 GiB; text up to 2 MiB. System codecs determine playback support; unsupported formats can still be downloaded.
+- Text saves replace the remote file, first checking its content against the opening snapshot, then verifying saved bytes. Unsaved-change prompts protect close actions. This is best-effort conflict detection, not an atomic provider lock; avoid simultaneous writers. HTML/SVG/code are displayed as plain text, never executed. Temporary previews are removed on close; abandoned cache files expire after 24 hours when another preview is opened (3 GiB cache cap).
 - Centered profile selector: saved profiles left, searchable services right, blurred background.
 - Small **Помощь** button after selecting a service: dedicated credential instructions without clearing the form.
 - Actual folder browsing, file/folder upload/download, rename, confirmed deletion, multi-select, list/grid views and drag/drop.
@@ -49,7 +52,7 @@ The GitHub workflow builds and tests independently on Intel and Apple Silicon ru
 
 Windows source builds require MSVC C++ Build Tools and WebView2. The same commands build Windows natively; use `npm run tauri build -- --bundles nsis` for the installer. CI checks installation, resources, engine execution, application startup and uninstallation on a clean Windows account.
 
-The public Bloom release includes Windows and both Mac variants and is not marked as a prerelease. Windows downloads are not Authenticode signed: SmartScreen may warn or block them. Release status does not remove operating-system security checks. See [release notes](docs/RELEASE.md) for verification scope and known limitations.
+The public Glimmer release includes Windows and both Mac variants and is not marked as a prerelease. Windows downloads are not Authenticode signed: SmartScreen may warn or block them. Release status does not remove operating-system security checks. See [release notes](docs/RELEASE.md) for verification scope and known limitations.
 
 ## Public repository
 
