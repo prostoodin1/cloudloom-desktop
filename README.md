@@ -2,10 +2,12 @@
 
 A desktop file manager for multiple cloud accounts, with a profile picker, light/dark themes, real file/folder transfers and per-service setup help.
 
-## Download for Mac
+## Download for Windows and Mac
 
 See [Releases](https://github.com/prostoodin1/cloudloom-desktop/releases).
 
+- **Cloudloom_Bloom_Windows_x64_Setup.exe** — Windows 10/11 x64 installer, including WebView2 runtime setup when needed.
+- **Cloudloom_Bloom_Windows_x64_Portable.zip** — extract all files, keep the resources folder and run cloudloom.exe. Requires WebView2 Runtime.
 - **Cloudloom_Bloom_macOS_Intel.dmg** — Intel Macs (x86_64).
 - **Cloudloom_Bloom_macOS_AppleSilicon.dmg** — Apple Silicon (M-series, ARM64), native build, no Rosetta required.
 - ZIP application bundles and SHA256 checksums are also provided.
@@ -45,7 +47,9 @@ Preparation downloads pinned rclone v1.75.2 for the host CPU and verifies its of
 
 The GitHub workflow builds and tests independently on Intel and Apple Silicon runners, verifies packaged architectures and resource execution, and checks that the application stays running at startup. Runner smoke tests are not a substitute for user-interactive tests, real account consent or a Gatekeeper test after downloading the release.
 
-Windows source builds remain supported with MSVC C++ Build Tools and WebView2. This public release publishes the two Mac variants.
+Windows source builds require MSVC C++ Build Tools and WebView2. The same commands build Windows natively; use `npm run tauri build -- --bundles nsis` for the installer. CI checks installation, resources, engine execution, application startup and uninstallation on a clean Windows account.
+
+The public Bloom release includes Windows and both Mac variants and is not marked as a prerelease. Windows downloads are not Authenticode signed: SmartScreen may warn or block them. Release status does not remove operating-system security checks. See [release notes](docs/RELEASE.md) for verification scope and known limitations.
 
 ## Public repository
 
