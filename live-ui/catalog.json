@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "revision": 3,
+  "revision": 4,
   "ui": {
     "welcomeTitle": "Ваше пространство,",
     "welcomeEmphasis": "без границ.",
@@ -12,7 +12,7 @@
   "services": {
     "delivery": {
       "name": "Delivery",
-      "description": "Файлы · WebDAV / SFTPGo"
+      "description": "Ваши файлы и папки Delivery"
     }
   }
 }
