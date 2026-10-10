@@ -1,0 +1,53 @@
+name: Publish live interface
+
+on:
+  push:
+    branches: [main]
+    paths: ['live-ui/**', 'src/live-ui.ts', 'src/api.ts', 'src/services.ts', 'tests/**', '.github/workflows/live-ui.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: publish-live-ui
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - name: Publish validated catalogue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          if ! gh api "repos/$REPO/git/ref/heads/live-ui" >/dev/null 2>&1; then
+            gh api --method POST "repos/$REPO/git/refs" -f ref=refs/heads/live-ui -f sha="$SOURCE_SHA" >/dev/null
+          fi
+          current=$(gh api "repos/$REPO/contents/live-ui/catalog.json?ref=live-ui")
+          old=$(printf '%s' "$current" | jq -r .content | base64 --decode)
+          new=$(cat live-ui/catalog.json)
+          if [ "$(printf '%s' "$old" | jq -cS .)" = "$(printf '%s' "$new" | jq -cS .)" ]; then
+            echo 'Catalogue already published.'
+            exit 0
+          fi
+          old_revision=$(printf '%s' "$old" | jq .revision)
+          new_revision=$(printf '%s' "$new" | jq .revision)
+          if [ "$new_revision" -le "$old_revision" ]; then
+            echo 'Increase catalogue revision before publishing.' >&2
+            exit 1
+          fi
+          sha=$(printf '%s' "$current" | jq -r .sha)
+          content=$(base64 -w0 live-ui/catalog.json)
+          gh api --method PUT "repos/$REPO/contents/live-ui/catalog.json" -f branch=live-ui -f sha="$sha" -f message="Publish live interface revision $new_revision" -f content="$content" >/dev/null

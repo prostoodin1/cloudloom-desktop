@@ -293,17 +293,53 @@ pub fn local_is_directory(path: String) -> Result<bool, String> {
 }
 
 fn service_help_url(provider: &str) -> Result<String, String> {
+    if provider == "delivery" {
+        return Ok("https://docs.sftpgo.com/latest/webdav/".into());
+    }
     let page = match provider {
+        "nextcloud" | "owncloud" => "webdav/",
+        "wasabi" => "s3/#wasabi",
+        "r2" => "s3/#cloudflare-r2",
         "drive" => "drive/#making-your-own-client-id",
         "google cloud storage" => "googlecloudstorage/",
         "alias" => "local/",
         "onedrive" | "dropbox" | "box" | "pcloud" | "yandex" | "webdav" | "s3" | "mega"
-        | "koofr" | "hidrive" | "b2" | "azureblob" | "storj" | "seafile" | "sftp" => {
+        | "koofr" | "hidrive" | "b2" | "azureblob" | "storj" | "seafile" | "sftp"
+        | "protondrive" | "opendrive" | "jottacloud" | "pikpak" => {
             return Ok(format!("https://rclone.org/{provider}/"));
         }
         _ => return Err("Нет инструкции для этого сервиса".into()),
     };
     Ok(format!("https://rclone.org/{page}"))
+}
+
+fn adapter_for(provider: &str) -> &str {
+    match provider {
+        "delivery" | "nextcloud" | "owncloud" => "webdav",
+        "wasabi" | "r2" => "s3",
+        other => other,
+    }
+}
+
+fn require_https_endpoint(value: Option<&String>) -> Result<(), String> {
+    let url = value
+        .and_then(|value| tauri::Url::parse(value).ok())
+        .ok_or("Укажите полный HTTPS-адрес подключения")?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err("Нужен HTTPS-адрес без пароля, query-параметров и фрагмента".into());
+    }
+    if url.path() == "/web" || url.path().starts_with("/web/") {
+        return Err(
+            "Это адрес веб-интерфейса, не WebDAV. Получите WebDAV URL у администратора".into(),
+        );
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -366,9 +402,27 @@ pub async fn connect_profile(
         "storj",
         "seafile",
         "sftp",
+        "delivery",
+        "nextcloud",
+        "owncloud",
+        "protondrive",
+        "opendrive",
+        "jottacloud",
+        "pikpak",
+        "wasabi",
+        "r2",
     ];
     if !allowed.contains(&request.provider.as_str()) {
         return Err("Провайдер не поддерживается".into());
+    }
+    if ["delivery", "nextcloud", "owncloud"].contains(&request.provider.as_str()) {
+        require_https_endpoint(request.options.get("url"))?;
+    }
+    if ["wasabi", "r2"].contains(&request.provider.as_str()) {
+        require_https_endpoint(request.options.get("endpoint"))?;
+        if request.root.trim().is_empty() {
+            return Err("Укажите имя бакета".into());
+        }
     }
     if request.provider == "sftp" {
         let hosts = request
@@ -451,7 +505,7 @@ pub async fn connect_profile(
         "config".into(),
         "create".into(),
         "storage".into(),
-        request.provider.clone(),
+        adapter_for(&request.provider).to_string(),
         "--non-interactive".into(),
         "--obscure".into(),
     ];
@@ -482,12 +536,27 @@ pub async fn connect_profile(
         "key_file",
         "key_file_pass",
         "known_hosts_file",
+        "username",
+        "mailbox_password",
     ];
     for (key, value) in request.options {
         if valid_keys.contains(&key.as_str()) && !value.is_empty() {
             args.push(key);
             args.push(value);
         }
+    }
+    match request.provider.as_str() {
+        "delivery" => args.extend(["vendor".into(), "other".into()]),
+        "nextcloud" => args.extend(["vendor".into(), "nextcloud".into()]),
+        "owncloud" => args.extend(["vendor".into(), "owncloud".into()]),
+        "wasabi" => args.extend(["provider".into(), "Wasabi".into()]),
+        "r2" => args.extend([
+            "provider".into(),
+            "Cloudflare".into(),
+            "region".into(),
+            "auto".into(),
+        ]),
+        _ => {}
     }
     if request.provider == "koofr" {
         args.extend(["provider".into(), "koofr".into()]);
@@ -547,8 +616,13 @@ async fn finish_connect(
             },
         );
         let option = &response["Option"];
+        let name = option["Name"].as_str().unwrap_or("");
+        let secret = option["IsPassword"].as_bool().unwrap_or(false)
+            || name.contains("token")
+            || name.contains("password")
+            || name == "2fa";
         return Ok(
-            json!({"id":id,"question":{"name":option["Name"],"help":option["Help"],"default":option["Default"],"password":option["IsPassword"],"exclusive":option["Exclusive"],"examples":option["Examples"]},"error":response["Error"]}),
+            json!({"id":id,"question":{"name":option["Name"],"help":option["Help"],"default":if secret {Value::Null} else {option["Default"].clone()},"password":secret,"exclusive":option["Exclusive"],"examples":option["Examples"]},"error":response["Error"]}),
         );
     }
     // Confirm actual access before presenting the account as a connected profile.
@@ -942,6 +1016,24 @@ mod tests {
         assert!(output.status.success());
         let catalogue: Value = serde_json::from_slice(&output.stdout).unwrap();
         for (provider, keys) in [
+            ("webdav", vec!["url", "vendor", "user", "pass"]),
+            (
+                "s3",
+                vec![
+                    "provider",
+                    "endpoint",
+                    "region",
+                    "access_key_id",
+                    "secret_access_key",
+                ],
+            ),
+            (
+                "protondrive",
+                vec!["username", "password", "2fa", "mailbox_password"],
+            ),
+            ("opendrive", vec!["username", "password"]),
+            ("jottacloud", vec!["client_id", "client_secret"]),
+            ("pikpak", vec!["user", "pass"]),
             ("mega", vec!["user", "pass", "2fa"]),
             ("koofr", vec!["provider", "user", "password"]),
             ("hidrive", vec!["client_id", "client_secret"]),
@@ -982,6 +1074,27 @@ mod tests {
                 );
             }
         }
+    }
+    #[test]
+    fn service_presets_keep_secure_adapters() {
+        assert_eq!(adapter_for("delivery"), "webdav");
+        assert_eq!(adapter_for("nextcloud"), "webdav");
+        assert_eq!(adapter_for("owncloud"), "webdav");
+        assert_eq!(adapter_for("r2"), "s3");
+        assert_eq!(adapter_for("wasabi"), "s3");
+        assert!(require_https_endpoint(Some(&"https://files.example.com/dav/".into())).is_ok());
+        for url in [
+            "http://files.example.com/dav/",
+            "https://delivery.studiored.es/web/",
+            "https://u:p@files.example.com/",
+            "https://files.example.com/?token=x",
+        ] {
+            assert!(require_https_endpoint(Some(&url.into())).is_err());
+        }
+        assert_eq!(
+            service_help_url("delivery").unwrap(),
+            "https://docs.sftpgo.com/latest/webdav/"
+        );
     }
     #[tokio::test]
     async fn encrypted_local_provider_real_file_roundtrip() {

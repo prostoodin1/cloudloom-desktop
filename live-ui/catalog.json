@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "revision": 1,
+  "ui": {
+    "welcomeTitle": "Ваше пространство,",
+    "welcomeEmphasis": "без границ.",
+    "subtitle": "Выберите профиль или подключите новое хранилище.",
+    "tagline": "ОДНО ПРИЛОЖЕНИЕ. ВСЕ ВАШИ ОБЛАКА.",
+    "accentDark": "#b6c9ad",
+    "accentLight": "#43694b"
+  },
+  "services": {}
+}

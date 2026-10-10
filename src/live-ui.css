@@ -1,0 +1,3 @@
+.live-ui-check { display:flex; align-items:center; gap:6px; color:var(--muted); background:transparent; font:inherit; cursor:pointer; padding:0; }
+.live-ui-check:disabled { opacity:.6; cursor:wait; }
+.live-ui-check:hover { color:var(--accent); }

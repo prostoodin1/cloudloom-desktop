@@ -30,5 +30,14 @@ export const providers = [
   { id: 'storj', name: 'Storj', description: 'Распределённое хранилище', color: '#6385e0', letters: 'St', oauth: false },
   { id: 'seafile', name: 'Seafile', description: 'Библиотеки на вашем сервере', color: '#e6a64b', letters: 'Sf', oauth: false },
   { id: 'sftp', name: 'SFTP', description: 'Сервер по защищённому SSH', color: '#aa8dd1', letters: 'SSH', oauth: false },
+  { id: 'delivery', name: 'Delivery · Studio Red', description: 'delivery.studiored.es · SFTPGo / WebDAV', color: '#c47361', letters: 'SR', oauth: false },
+  { id: 'nextcloud', name: 'Nextcloud', description: 'Личное или корпоративное облако', color: '#0082c9', letters: 'N', oauth: false },
+  { id: 'owncloud', name: 'ownCloud', description: 'Файлы на своём сервере', color: '#345b91', letters: 'OC', oauth: false },
+  { id: 'protondrive', name: 'Proton Drive', description: 'Зашифрованное облако · адаптер beta', color: '#8a6be8', letters: 'P', oauth: false },
+  { id: 'opendrive', name: 'OpenDrive', description: 'Облачные файлы и резервные копии', color: '#4598c9', letters: 'OD', oauth: false },
+  { id: 'jottacloud', name: 'Jottacloud', description: 'Подключение по Personal login token', color: '#54a887', letters: 'J', oauth: false },
+  { id: 'pikpak', name: 'PikPak', description: 'Медиафайлы и личное хранилище', color: '#5579de', letters: 'PK', oauth: false },
+  { id: 'wasabi', name: 'Wasabi', description: 'S3-хранилище по ключам доступа', color: '#73a644', letters: 'W', oauth: false },
+  { id: 'r2', name: 'Cloudflare R2', description: 'Бакеты Cloudflare и S3 API', color: '#e18a3b', letters: 'R2', oauth: false },
 ]
 export const service = (id: string) => providers.find(p => p.id === id) ?? providers[0]
