@@ -534,13 +534,13 @@ mod tests {
     #[test]
     fn addresses_accept_browser_links_but_never_insecure_or_embedded_secrets() {
         for url in [
-            "delivery.studiored.es",
-            "https://delivery.studiored.es/web/",
-            "https://delivery.studiored.es/web/client/login?next=/x#form",
+            "files.example.com",
+            "https://files.example.com/web/",
+            "https://files.example.com/web/client/login?next=/x#form",
         ] {
             assert_eq!(
                 site_url(url).unwrap().as_str(),
-                "https://delivery.studiored.es/"
+                "https://files.example.com/"
             );
         }
         assert_eq!(

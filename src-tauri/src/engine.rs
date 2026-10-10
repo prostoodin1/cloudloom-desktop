@@ -1471,7 +1471,7 @@ mod tests {
         assert!(require_https_endpoint(Some(&"https://files.example.com/dav/".into())).is_ok());
         for url in [
             "http://files.example.com/dav/",
-            "https://delivery.studiored.es/web/",
+            "https://files.example.com/web/",
             "https://u:p@files.example.com/",
             "https://files.example.com/?token=x",
         ] {

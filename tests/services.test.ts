@@ -5,6 +5,11 @@ import { guides, guideUrl, releaseName, connectionSummary } from '../src/service
 
 describe('service setup catalogue', () => {
   it('keeps basic login short without hiding required credentials', () => {
+    const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
+    const selectService = app.split('const selectService =')[1].split('const openGuide')[0]
+    expect(selectService).toContain('setOptions({})')
+    expect(selectService).not.toContain('https://')
+    expect(guides.delivery.fields?.find(f => f.key === 'url')?.placeholder).toBe('https://files.example.com/web/')
     expect(guides.delivery.fields?.filter(f => !f.advanced).map(f => f.key)).toEqual(['url','user','pass'])
     expect(guides.delivery.fields?.find(f => f.key === '2fa')?.advanced).toBe(true)
     expect(guides.sftp.fields?.find(f => f.key === 'pass')?.advanced).not.toBe(true)

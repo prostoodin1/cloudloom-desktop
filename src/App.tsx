@@ -124,7 +124,7 @@ export default function App() {
   const picked = entries.filter(e => selected.has(e.path))
   const activeTasks = tasks.filter(t => ['active','queued'].includes(t.status))
   const updateOption = (key: string, value: string) => setOptions(o => ({ ...o, [key]: value }))
-  const selectService = (id: string) => { setConnecting(id); setShowHelp(false); setFormName(service(id).name); setRoot(''); setOptions(id === 'delivery' ? { url: 'https://delivery.studiored.es/web/' } : {}); setReply(null); setAdvanced(false); setConnectError('') }
+  const selectService = (id: string) => { setConnecting(id); setShowHelp(false); setFormName(service(id).name); setRoot(''); setOptions({}); setReply(null); setAdvanced(false); setConnectError('') }
   const openGuide = () => {
     if (!connecting) return
     if (desktop) void call('open_service_help', { provider: connecting }).catch(e => setConnectError(String(e)))
