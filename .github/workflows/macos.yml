@@ -37,15 +37,15 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path release-assets -Force | Out-Null
-          Copy-Item src-tauri/target/release/bundle/nsis/*.exe release-assets/Cloudloom_Harbor_Windows_x64_Setup.exe
+          Copy-Item src-tauri/target/release/bundle/nsis/*.exe release-assets/Cloudloom_Juniper_Windows_x64_Setup.exe
           $portable = New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/Cloudloom-portable" -Force
           Copy-Item src-tauri/target/release/cloudloom.exe $portable.FullName
           Copy-Item src-tauri/resources "$($portable.FullName)/resources" -Recurse
-          Compress-Archive -Path "$($portable.FullName)/*" -DestinationPath release-assets/Cloudloom_Harbor_Windows_x64_Portable.zip
+          Compress-Archive -Path "$($portable.FullName)/*" -DestinationPath release-assets/Cloudloom_Juniper_Windows_x64_Portable.zip
           Get-ChildItem release-assets -File | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $($_.Name)" } | Set-Content release-assets/SHA256SUMS_Windows.txt -Encoding utf8
       - uses: actions/upload-artifact@v4
         with:
-          name: Cloudloom-Harbor-Windows-x64
+          name: Cloudloom-Juniper-Windows-x64
           path: release-assets/*
           if-no-files-found: error
           retention-days: 30
@@ -101,13 +101,13 @@ jobs:
           ARCH_NAME: ${{ matrix.name }}
         run: |
           mkdir -p release-assets
-          cp src-tauri/target/"$TARGET"/release/bundle/dmg/*.dmg "release-assets/Cloudloom_Harbor_macOS_$ARCH_NAME.dmg"
-          ditto -c -k --sequesterRsrc --keepParent "src-tauri/target/$TARGET/release/bundle/macos/Cloudloom.app" "release-assets/Cloudloom_Harbor_macOS_$ARCH_NAME.zip"
+          cp src-tauri/target/"$TARGET"/release/bundle/dmg/*.dmg "release-assets/Cloudloom_Juniper_macOS_$ARCH_NAME.dmg"
+          ditto -c -k --sequesterRsrc --keepParent "src-tauri/target/$TARGET/release/bundle/macos/Cloudloom.app" "release-assets/Cloudloom_Juniper_macOS_$ARCH_NAME.zip"
           cd release-assets
           shasum -a 256 ./*.dmg ./*.zip > "SHA256SUMS_$ARCH_NAME.txt"
       - uses: actions/upload-artifact@v4
         with:
-          name: Cloudloom-Harbor-macOS-${{ matrix.name }}
+          name: Cloudloom-Juniper-macOS-${{ matrix.name }}
           path: release-assets/*
           if-no-files-found: error
           retention-days: 30
@@ -123,11 +123,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          pattern: Cloudloom-Harbor-*
+          pattern: Cloudloom-Juniper-*
           path: release-assets
           merge-multiple: true
       - name: Create public release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
-        run: gh release create "$RELEASE_TAG" release-assets/* --title "Cloudloom Harbor" --notes-file docs/RELEASE.md --verify-tag --latest
+        run: gh release create "$RELEASE_TAG" release-assets/* --title "Cloudloom Juniper" --notes-file docs/RELEASE.md --verify-tag --latest

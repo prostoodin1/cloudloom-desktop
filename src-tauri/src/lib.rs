@@ -1,5 +1,7 @@
+mod delivery;
 mod engine;
 mod preview;
+mod setup;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -21,6 +23,7 @@ pub fn run() {
             engine::list_files,
             engine::create_folder,
             engine::rename_item,
+            engine::move_items,
             engine::delete_item,
             engine::start_transfer,
             engine::cancel_transfer,
