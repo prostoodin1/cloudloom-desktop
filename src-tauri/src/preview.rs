@@ -13,6 +13,7 @@ pub(crate) struct Session {
     pub(crate) remote: String,
     pub(crate) local: PathBuf,
     pub(crate) original: Option<Vec<u8>>,
+    pub(crate) stream: Option<crate::streaming::Session>,
 }
 
 #[derive(Serialize)]
@@ -261,6 +262,7 @@ pub struct Preview {
     token: String,
     kind: String,
     local_path: Option<String>,
+    stream_url: Option<String>,
     text: Option<String>,
 }
 
@@ -281,6 +283,34 @@ pub async fn prepare_preview(
         return Err("Закройте предыдущие окна просмотра".into());
     }
     let stat = engine.preview_stat(&id, &source).await?;
+    if kind == "video" || kind == "audio" {
+        let size = stat["Size"]
+            .as_u64()
+            .filter(|size| *size > 0 && *size <= 50_000_000_000)
+            .ok_or(
+                "Потоковый просмотр поддерживает файлы до 50 ГБ с известным ненулевым размером",
+            )?;
+        let (url, stream) =
+            crate::streaming::start(engine.stream_source(&id, &source)?, size, name).await?;
+        let token = uuid::Uuid::new_v4().to_string();
+        sessions.insert(
+            token.clone(),
+            Session {
+                profile_id: id,
+                remote: source,
+                local: PathBuf::new(),
+                original: None,
+                stream: Some(stream),
+            },
+        );
+        return Ok(Preview {
+            token,
+            kind: kind.into(),
+            local_path: None,
+            stream_url: Some(url),
+            text: None,
+        });
+    }
     let limit = if kind == "text" {
         TEXT_LIMIT
     } else {
@@ -379,12 +409,14 @@ pub async fn prepare_preview(
             remote: source,
             local,
             original,
+            stream: None,
         },
     );
     Ok(Preview {
         token,
         kind: kind.into(),
         local_path,
+        stream_url: None,
         text,
     })
 }
@@ -396,6 +428,9 @@ pub async fn close_preview(
     token: String,
 ) -> Result<(), String> {
     if let Some(session) = engine.previews.lock().await.remove(&token) {
+        if session.stream.is_some() {
+            return Ok(());
+        }
         let _ = app.asset_protocol_scope().forbid_file(&session.local);
         std::fs::remove_file(&session.local).map_err(|e| e.to_string())?;
     }

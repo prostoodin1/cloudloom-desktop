@@ -71,8 +71,8 @@ export function FilePreview({ profileId, remotePath, entry, onClose, onSaved, on
     })
     return () => { void unlisten.then(fn => fn()) }
   }, [])
-  const src = data?.localPath ? convertFileSrc(data.localPath) : undefined
-  const mediaError = () => setError('Формат или кодек не поддерживается системой. Скачайте файл и откройте во внешнем приложении.')
+  const src = data?.streamUrl ?? (data?.localPath ? convertFileSrc(data.localPath) : undefined)
+  const mediaError = () => setError('Не удалось воспроизвести файл: проверьте сеть, право чтения и поддержку чтения участков на сервере. Формат/кодек также должен поддерживаться системой; MKV и AVI поддерживаются не везде. Полное скачивание автоматически не запускается.')
   return <div className="modal-backdrop preview-backdrop"><div className="file-preview" role="dialog" aria-modal="true" aria-labelledby="preview-title" tabIndex={-1} ref={dialog}>
     <header className="preview-header"><div><h2 id="preview-title">{entry.name}</h2><small>{formatBytes(entry.size)}{dirty ? ' · Несохранённые правки' : saved ? ' · Сохранено в хранилище' : ''}</small></div><div className="preview-actions">
       <button className="button subtle" onClick={onDownload}><Download size={15}/>Скачать</button>
@@ -80,7 +80,7 @@ export function FilePreview({ profileId, remotePath, entry, onClose, onSaved, on
       <button className="round" aria-label="Закрыть просмотр" disabled={saving} onClick={close}><X size={18}/></button>
     </div></header>
     {error && <div className="error" role="alert">{error}</div>}
-    <div className="preview-body">{loading ? <div className="empty"><LoaderCircle className="spin" size={30}/><h3>Загружаем файл для просмотра</h3><p>Создаётся временная копия. Большое видео может загружаться несколько минут.</p></div> : data?.kind === 'text' ? <textarea className="text-editor" aria-label={`Редактировать ${entry.name}`} spellCheck={false} value={text} disabled={saving} onChange={event => { setText(event.target.value); setSaved(false) }}/> : data?.kind === 'image' ? <img src={src} alt={entry.name} onError={mediaError}/> : data?.kind === 'video' ? <video src={src} controls preload="metadata" onError={mediaError}/> : data?.kind === 'audio' ? <audio src={src} controls preload="metadata" onError={mediaError}/> : <div className="empty"><h3>Просмотр недоступен</h3><p>Можно скачать файл обычным способом.</p></div>}</div>
-    <footer className="preview-footer">{data?.kind === 'text' ? 'UTF-8 · до 2 MiB · Ctrl+S / ⌘S · сохранение заменяет файл в хранилище' : 'Временная копия · до 1 GiB · поддержка форматов и кодеков зависит от системы'}</footer>
+    <div className="preview-body">{loading ? <div className="empty"><LoaderCircle className="spin" size={30}/><h3>Открываем файл</h3><p>Для видео и аудио подключаем поток — без полной копии файла на диске.</p></div> : data?.kind === 'text' ? <textarea className="text-editor" aria-label={`Редактировать ${entry.name}`} spellCheck={false} value={text} disabled={saving} onChange={event => { setText(event.target.value); setSaved(false) }}/> : data?.kind === 'image' ? <img src={src} alt={entry.name} onError={mediaError}/> : data?.kind === 'video' ? <video src={src} controls preload="metadata" onError={mediaError}/> : data?.kind === 'audio' ? <audio src={src} controls preload="metadata" onError={mediaError}/> : <div className="empty"><h3>Просмотр недоступен</h3><p>Можно скачать файл обычным способом.</p></div>}</div>
+    <footer className="preview-footer">{data?.kind === 'text' ? 'UTF-8 · до 2 MiB · Ctrl+S / ⌘S · сохранение заменяет файл в хранилище' : data?.streamUrl ? 'Поток · до 50 ГБ · перемотка читает нужный участок · трафик сервиса оплачивается по его тарифу · кодеки зависят от системы' : 'Временная копия изображения · до 1 GiB'}</footer>
   </div></div>
 }

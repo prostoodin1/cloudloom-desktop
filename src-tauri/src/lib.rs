@@ -2,6 +2,8 @@ mod delivery;
 mod engine;
 mod preview;
 mod setup;
+mod sharing;
+mod streaming;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -33,6 +35,9 @@ pub fn run() {
             preview::prepare_preview,
             preview::close_preview,
             preview::save_preview_text,
+            sharing::sharing_capabilities,
+            sharing::create_share,
+            sharing::revoke_share,
         ])
         .run(tauri::generate_context!())
         .expect("Cloudloom could not start");

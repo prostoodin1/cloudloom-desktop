@@ -321,6 +321,28 @@ impl Engine {
     fn config(&self, id: &str) -> PathBuf {
         self.directory.join(format!("{id}.conf"))
     }
+    pub(crate) fn stream_source(
+        &self,
+        id: &str,
+        remote: &str,
+    ) -> Result<crate::streaming::Source, String> {
+        self.profile(id)?;
+        if let Some(client) = self.delivery_client(id)? {
+            return Ok(crate::streaming::Source::Delivery {
+                client,
+                path: remote
+                    .strip_prefix("storage:")
+                    .ok_or("Некорректный путь")?
+                    .into(),
+            });
+        }
+        Ok(crate::streaming::Source::Rclone {
+            binary: self.binary.clone(),
+            config: self.config(id),
+            password: self.password.clone(),
+            remote: remote.into(),
+        })
+    }
     pub(crate) fn command(&self, id: &str) -> Command {
         let mut cmd = Command::new(&self.binary);
         cmd.args([
@@ -892,6 +914,15 @@ pub async fn cancel_connect(engine: State<'_, Engine>, id: String) -> Result<(),
 #[tauri::command]
 pub async fn disconnect_profile(engine: State<'_, Engine>, id: String) -> Result<(), String> {
     let profile = engine.profile(&id)?;
+    if engine
+        .previews
+        .lock()
+        .await
+        .values()
+        .any(|session| session.profile_id == id)
+    {
+        return Err("Сначала закройте просмотр файлов этого профиля".into());
+    }
     if engine
         .tasks
         .lock()
@@ -1509,6 +1540,14 @@ mod tests {
             previews: tokio::sync::Mutex::new(HashMap::new()),
         };
         let id = "test";
+        engine.profiles.lock().unwrap().push(Profile {
+            id: id.into(),
+            name: "Fixture".into(),
+            provider: "alias".into(),
+            root: "".into(),
+            ready: true,
+            transport: "".into(),
+        });
         std::fs::write(engine.config(id), "").unwrap();
         let mut child = engine
             .command(id)
@@ -1562,6 +1601,107 @@ mod tests {
             .await
             .unwrap();
         assert!(listing.contains("Папка"));
+        assert!(!engine.share_capabilities(id).await.unwrap().supported);
+        let video = (0..200_000).map(|i| (i % 251) as u8).collect::<Vec<_>>();
+        std::fs::write(storage.join("stream.mp4"), &video).unwrap();
+        let (url, stream) = crate::streaming::start(
+            engine.stream_source(id, "storage:stream.mp4").unwrap(),
+            video.len() as u64,
+            "stream.mp4",
+        )
+        .await
+        .unwrap();
+        let http = reqwest::Client::new();
+        let head = http.head(&url).send().await.unwrap();
+        assert_eq!(head.status(), 200);
+        assert_eq!(head.headers()["content-length"], video.len().to_string());
+        for (header, start, end) in [
+            ("bytes=3-19", 3, 19),
+            ("bytes=-100", video.len() - 100, video.len() - 1),
+            ("bytes=199900-", 199900, video.len() - 1),
+        ] {
+            let response = http.get(&url).header("Range", header).send().await.unwrap();
+            assert_eq!(response.status(), 206);
+            assert_eq!(
+                response.headers()["content-range"],
+                format!("bytes {start}-{end}/{}", video.len())
+            );
+            assert_eq!(
+                response.bytes().await.unwrap().as_ref(),
+                &video[start..=end]
+            );
+        }
+        assert_eq!(
+            http.get(&url)
+                .send()
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap()
+                .as_ref(),
+            video.as_slice()
+        );
+        assert_eq!(
+            http.get(&url)
+                .header("Range", "bytes=999999-")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            416
+        );
+        assert_eq!(
+            http.get(&url)
+                .header("Origin", "https://evil.example")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            403
+        );
+        assert_eq!(
+            http.get(&url)
+                .header("Host", "evil.example")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            403
+        );
+        let wrong = format!("{}/media/wrong", url.split("/media/").next().unwrap());
+        assert_eq!(http.get(wrong).send().await.unwrap().status(), 404);
+        drop(stream);
+        assert!(http.get(&url).send().await.is_err());
+        std::fs::remove_file(storage.join("stream.mp4")).unwrap();
+        // Optional browser harness uses only an explicitly supplied local QA video.
+        // Default CI tests above need neither a browser nor a downloaded media fixture.
+        if let Ok(script) = std::env::var("CLOUDLOOM_TEST_BROWSER_SCRIPT") {
+            let fixture = PathBuf::from(
+                std::env::var("CLOUDLOOM_TEST_VIDEO").expect("local QA video required"),
+            );
+            assert!(fixture.is_absolute() && fixture.is_file());
+            std::fs::copy(&fixture, storage.join("browser.mp4")).unwrap();
+            let size = std::fs::metadata(&fixture).unwrap().len();
+            let (url, session) = crate::streaming::start(
+                engine.stream_source(id, "storage:browser.mp4").unwrap(),
+                size,
+                "browser.mp4",
+            )
+            .await
+            .unwrap();
+            let status = tokio::process::Command::new("node")
+                .arg(script)
+                .current_dir(PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap())
+                .env("CLOUDLOOM_TEST_STREAM_URL", url)
+                .env("CLOUDLOOM_TEST_STREAM_SIZE", size.to_string())
+                .status()
+                .await
+                .unwrap();
+            drop(session);
+            std::fs::remove_file(storage.join("browser.mp4")).unwrap();
+            assert!(status.success(), "Real proxy browser playback/seek failed");
+        }
         engine
             .execute(
                 id,
@@ -1637,6 +1777,7 @@ mod tests {
             remote: "storage:note.txt".into(),
             local: cache,
             original: Some(initial),
+            stream: None,
         };
         engine
             .save_text_session(&mut session, "Правки в облаке\r\n".into())

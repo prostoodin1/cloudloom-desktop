@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost; media-src asset: http://asset.localhost; connect-src ipc: http://ipc.localhost https://raw.githubusercontent.com; object-src 'none'; frame-src 'none'",
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost; media-src asset: http://asset.localhost http://127.0.0.1:*; connect-src ipc: http://ipc.localhost https://raw.githubusercontent.com; object-src 'none'; frame-src 'none'",
       "assetProtocol": { "enable": true, "scope": [] }
     }
   },

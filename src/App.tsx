@@ -5,6 +5,8 @@ import { open, save } from '@tauri-apps/plugin-dialog'
 import { ArrowDownToLine, ArrowLeft, ArrowUpToLine, Check, ChevronRight, CircleHelp, Cloud, Cloudy, Download, ExternalLink, File, FileAudio, FileImage, FileText, Film, Folder, FolderPlus, Grid2X2, HardDrive, LayoutList, LoaderCircle, LogOut, Menu, Moon, MoreHorizontal, Plus, RefreshCw, Search, Settings2, Sun, Trash2, Upload, Users, X } from 'lucide-react'
 import { call, desktop, providers, service, type ConnectReply, type Entry, type Profile, type Task, type StorageUsage } from './api'
 import { FilePreview } from './FilePreview'
+import { ShareDialog } from './ShareDialog'
+import type { ShareCapabilities } from './api'
 import { useLiveUI } from './live-ui'
 import { useChoiceActivation, useFileInteractions } from './useFileInteractions'
 import './file-interactions.css'
@@ -62,6 +64,15 @@ export default function App() {
   const choiceProps = useChoiceActivation()
   const [usage, setUsage] = useState<Record<string, StorageUsage>>({})
   const [preview, setPreview] = useState<{ entry: Entry; profileId: string; remotePath: string } | null>(null)
+  const [share, setShare] = useState<{ entry: Entry; profileId: string; path: string; capabilities: ShareCapabilities } | null>(null)
+  const [shareCaps, setShareCaps] = useState<{ id: string; value: ShareCapabilities } | null>(null)
+  useEffect(() => {
+    let disposed = false
+    if (profile) void call<ShareCapabilities>('sharing_capabilities', { id: profile.id }).then(value => {
+      if (!disposed) setShareCaps({ id: profile.id, value })
+    }).catch(() => {})
+    return () => { disposed = true }
+  }, [profile])
   const loadSequence = useRef(0)
   const current = useRef({ profile, path, choose, blocked: false })
   const reloadRef = useRef<() => void>(() => {})
@@ -93,7 +104,7 @@ export default function App() {
   useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem('cloudloom-theme', theme) }, [theme])
   useEffect(() => { localStorage.setItem('cloudloom-view', view) }, [view])
   useEffect(() => { if (!toast) return; const timer = window.setTimeout(() => setToast(''), 4500); return () => clearTimeout(timer) }, [toast])
-  useEffect(() => { current.current = { profile, path, choose, blocked: !!preview || !!prompt || moving } }, [profile, path, choose, preview, prompt, moving])
+  useEffect(() => { current.current = { profile, path, choose, blocked: !!preview || !!share || !!prompt || moving } }, [profile, path, choose, preview, share, prompt, moving])
   useEffect(() => {
     if (!desktop) return
     call<Profile[]>('list_profiles').then(setProfiles).catch(e => setError(String(e)))
@@ -151,7 +162,7 @@ export default function App() {
   const toggle = (entry: Entry) => setSelected(items => { const next = new Set(items); if (next.has(entry.path)) next.delete(entry.path); else next.add(entry.path); return next })
   const openPreview = (entry: Entry) => { if (profile && !entry.isDir) setPreview({ entry, profileId: profile.id, remotePath: pathJoin(path, entry.path) }) }
   const { drag, rowProps, dropProps } = useFileInteractions({
-    path, selected, setSelected, blocked: choose || !!preview || !!prompt || loading || moving || actionBusy,
+    path, selected, setSelected, blocked: choose || !!preview || !!share || !!prompt || loading || moving || actionBusy,
     open: entry => entry.isDir ? navigate(pathJoin(path, entry.path)) : openPreview(entry),
     move: async (sources, destination) => {
       if (!profile || moving) return
@@ -211,7 +222,7 @@ export default function App() {
   }
 
   return <div className={`app ${choose ? 'choosing' : ''}`} style={{ '--accent': theme === 'dark' ? liveUI.ui.accentDark : liveUI.ui.accentLight } as React.CSSProperties}>
-    <div className="workspace" aria-hidden={choose || preview ? true : undefined} inert={choose || !!preview || moving || undefined}>
+    <div className="workspace" aria-hidden={choose || preview || share ? true : undefined} inert={choose || !!preview || !!share || moving || undefined}>
       <aside className="sidebar">
         <Brand />
         <p className="section-label">ПРОСТРАНСТВО</p>
@@ -236,7 +247,7 @@ export default function App() {
           {loading ? <div className="empty"><LoaderCircle className="spin" size={28}/><h3>Открываем ваши файлы</h3><p>Получаем содержимое хранилища…</p></div> : visible.length ? <div className={view === 'grid' ? 'file-grid' : 'file-list'}>
             {view === 'list' && <div className="list-head"><label><input aria-label="Выбрать всё" type="checkbox" checked={visible.length > 0 && visible.every(e => selected.has(e.path))} onChange={e => setSelected(e.target.checked ? new Set(visible.map(item => item.path)) : new Set())}/></label><span>Название</span><span>Изменён</span><span>Размер</span><span/></div>}
             {visible.map(entry => { const Icon = iconFor(entry); return <div {...rowProps(entry)} key={entry.path} onContextMenu={e => { e.preventDefault(); setSelected(new Set([entry.path])); const menu = e.currentTarget.querySelector('details'); if (menu) menu.open = true }}>
-              <label className="file-check"><input type="checkbox" aria-label={`Выбрать ${entry.name}`} checked={selected.has(entry.path)} onChange={() => toggle(entry)}/></label><button className="entry-name"><span className={`file-symbol ${entry.isDir ? 'folder' : Icon === Film ? 'video' : Icon === FileAudio ? 'audio' : ''}`}><Icon size={view === 'grid' ? 32 : 21}/></span><strong>{entry.name}</strong></button><span className="file-date">{entry.modified && !entry.modified.startsWith('0001') ? new Date(entry.modified).toLocaleDateString('ru', { day:'numeric', month:'short', year:'numeric' }) : '—'}</span><span className="file-size">{entry.isDir ? 'Папка' : formatBytes(entry.size)}</span><details className="entry-menu"><summary aria-label={`Действия: ${entry.name}`}><MoreHorizontal size={18}/></summary><div className="dropdown">{!entry.isDir && <button onClick={() => openPreview(entry)}><FileText size={15}/>Открыть</button>}<button onClick={() => void download([entry])}><Download size={15}/>Скачать{entry.isDir ? ' папку' : ''}</button><button onClick={() => { setText(entry.name); setPrompt({kind:'rename',entry}) }}><Settings2 size={15}/>Переименовать</button><button className="danger-text" onClick={() => setPrompt({kind:'delete',entry})}><Trash2 size={15}/>Удалить</button></div></details>
+              <label className="file-check"><input type="checkbox" aria-label={`Выбрать ${entry.name}`} checked={selected.has(entry.path)} onChange={() => toggle(entry)}/></label><button className="entry-name"><span className={`file-symbol ${entry.isDir ? 'folder' : Icon === Film ? 'video' : Icon === FileAudio ? 'audio' : ''}`}><Icon size={view === 'grid' ? 32 : 21}/></span><strong>{entry.name}</strong></button><span className="file-date">{entry.modified && !entry.modified.startsWith('0001') ? new Date(entry.modified).toLocaleDateString('ru', { day:'numeric', month:'short', year:'numeric' }) : '—'}</span><span className="file-size">{entry.isDir ? 'Папка' : formatBytes(entry.size)}</span><details className="entry-menu"><summary aria-label={`Действия: ${entry.name}`}><MoreHorizontal size={18}/></summary><div className="dropdown">{!entry.isDir && <button onClick={() => openPreview(entry)}><FileText size={15}/>Открыть</button>}{profile && shareCaps?.id === profile.id && shareCaps.value.supported && <button onClick={() => setShare({ entry, profileId: profile.id, path: pathJoin(path, entry.path), capabilities: shareCaps.value })}><ExternalLink size={15}/>Получить ссылку</button>}<button onClick={() => void download([entry])}><Download size={15}/>Скачать{entry.isDir ? ' папку' : ''}</button><button onClick={() => { setText(entry.name); setPrompt({kind:'rename',entry}) }}><Settings2 size={15}/>Переименовать</button><button className="danger-text" onClick={() => setPrompt({kind:'delete',entry})}><Trash2 size={15}/>Удалить</button></div></details>
             </div> })}
           </div> : <div className="empty"><div className="empty-icon"><Folder size={34}/></div><h3>{query ? 'Ничего не найдено' : 'Здесь пока пусто'}</h3><p>{query ? 'Попробуйте другой поисковый запрос.' : 'Загрузите файлы или перетащите сюда папку.'}</p>{!query && <button className="button subtle" onClick={() => void upload(false)}><Plus size={16}/>Добавить файлы</button>}</div>}
           <footer className="file-footer"><span>{visible.length} элементов{selected.size ? ` · Выбрано ${selected.size}` : ''}</span><span><Cloud size={13}/>Обновлено с сервиса</span></footer>
@@ -274,9 +285,10 @@ export default function App() {
       </form>}
     </div></div>}
     {prompt && <div className="modal-backdrop"><form className="modal action-modal" role="dialog" aria-modal="true" onSubmit={e => { e.preventDefault(); void submitAction() }}><button type="button" className="modal-close" aria-label="Закрыть диалог" disabled={actionBusy} onClick={() => setPrompt(null)}><X size={18}/></button><h2>{prompt.kind === 'folder' ? 'Новая папка' : prompt.kind === 'rename' ? 'Переименовать' : 'Удалить выбранное?'}</h2>{prompt.kind === 'delete' ? <p className="modal-subtitle">{prompt.entry ? prompt.entry.name : `${picked.length} элементов`}. Папки удаляются вместе со всем содержимым. Восстановление зависит от сервиса.</p> : <label>Название<input autoFocus required value={text} onChange={e => setText(e.target.value)}/></label>}<div className="dialog-actions"><button type="button" className="button subtle" disabled={actionBusy} onClick={() => setPrompt(null)}>Отмена</button><button className={`button ${prompt.kind === 'delete' ? 'danger' : 'primary'}`} disabled={actionBusy || (prompt.kind !== 'delete' && !text.trim())}>{actionBusy && <LoaderCircle size={15} className="spin"/>}{prompt.kind === 'delete' ? 'Удалить' : 'Сохранить'}</button></div>{error && <p className="error">{error}</p>}</form></div>}
-    {dragging && !choose && !preview && !prompt && !moving && <div className="drop-overlay"><Upload size={40}/><h2>Отпустите, чтобы загрузить</h2><p>Файлы и папки попадут в текущую папку</p></div>}
+    {dragging && !choose && !preview && !share && !prompt && !moving && <div className="drop-overlay"><Upload size={40}/><h2>Отпустите, чтобы загрузить</h2><p>Файлы и папки попадут в текущую папку</p></div>}
     {drag && <div className="drag-ghost" style={{ left: Math.min(drag.x + 16, window.innerWidth - 260), top: Math.min(drag.y + 16, window.innerHeight - 90) }}>Переместить: {drag.sources.length}<small>{drag.destination !== null ? `В папку: ${drag.destination || 'Корень'}` : 'Наведите на папку или путь сверху · Esc — отмена'}</small></div>}
     {preview && <FilePreview profileId={preview.profileId} remotePath={preview.remotePath} entry={preview.entry} onClose={() => setPreview(null)} onSaved={() => { void reload(); setProfiles(items => [...items]) }} onDownload={() => void download([preview.entry])}/>}
+    {share && <ShareDialog profileId={share.profileId} path={share.path} entry={share.entry} capabilities={share.capabilities} onClose={() => setShare(null)}/>}
     {toast && <div className="toast" role="status"><Check size={16}/>{toast}</div>}
   </div>
 }

@@ -18,6 +18,14 @@ These initial Mac builds are **ad-hoc signed, not Apple Developer ID signed or n
 
 ## Features
 
+Unreleased source changes (not yet in the downloadable Juniper binaries):
+
+- Per-item **… → Получить ссылку** when the connected backend advertises public-link support. A confirmation dialog is required; opening a preview never creates a public link. Delivery user-API profiles create read-only links for exactly one selected file/folder, with a 1–90 day expiry (7 days by default), optional password and immediate revocation in the result dialog. Server permissions/password policies still apply. Other providers create/retrieve their normal link; password, expiry and revocation are not promised where the adapter does not provide them. Existing Delivery WebDAV profiles do not gain user-API sharing automatically.
+- Video/audio streaming up to **50 GB (50,000,000,000 bytes)** via a random, revocable loopback URL and bounded-memory byte-range reads. No whole-file temporary copy and no public link is created. Closing the viewer cancels active requests; the URL also expires after 24 hours. Seeking requires the storage backend/server to support efficient ranged reads; Delivery responses that ignore/mismatch Range are rejected instead of downloading the entire file. Playback still consumes network traffic and provider egress charges, if applicable. System codecs/container support apply: not every MKV/AVI/HEVC file plays on every OS. Images/text keep the existing bounded temporary-preview/editor path.
+- These features require a new native application build, not a live JSON presentation update. Windows engine/proxy tests and a local SFTPGo fixture do not substitute for testing every real cloud account or macOS WebKit playback.
+
+Current released Juniper features:
+
 - Single click selects; double-click or Enter opens profiles, services, folders and files. Ctrl/Cmd-click and checkboxes select multiple items. Internal drag-and-drop moves files/folders onto another folder or a breadcrumb/root within the current profile; Escape cancels. Existing names and self/descendant moves are rejected. Moves are not atomic batches; provider/network failures can leave partial results, which are reported. Local Explorer/Finder drops still upload; cross-profile moves and dragging out to the OS are not implemented.
 - Account/disk used/total storage in the profile sidebar and active profile header, refreshed every minute. Unsupported quotas stay unknown; no recursive file scans or invented totals.
 - Open files inside the app: images, video/audio with seeking and a UTF-8 text editor with Save / Ctrl+S / Cmd+S. Downloads a temporary local copy first, not instant remote streaming. Media up to 1 GiB; text up to 2 MiB. System codecs determine playback support; unsupported formats can still be downloaded.

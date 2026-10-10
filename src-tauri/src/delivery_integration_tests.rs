@@ -27,6 +27,7 @@ fn fixture() -> Server {
     let stopped = stop.clone();
     let thread = std::thread::spawn(move || {
         let mut files: HashMap<String, Option<Vec<u8>>> = HashMap::from([("/".into(), None)]);
+        let mut shares = HashMap::<String, Value>::new();
         while !stopped.load(Ordering::Relaxed) {
             let (stream, _) = match listener.accept() {
                 Ok(s) => s,
@@ -73,7 +74,7 @@ fn fixture() -> Server {
             let endpoint = url.path().strip_prefix("/api/v2/user/").unwrap_or("");
             let mut status = 200;
             let mut response = b"{}".to_vec();
-            let mut extra = "";
+            let mut extra = String::new();
             if endpoint == "token" {
                 if lower.contains("authorization: basic ") {
                     response = br#"{"access_token":"fixture-token"}"#.to_vec();
@@ -84,7 +85,7 @@ fn fixture() -> Server {
                 status = 401;
             } else if path == "/redirect" {
                 status = 302;
-                extra = "Location: http://127.0.0.1:9/do-not-send-credentials\r\n";
+                extra = "Location: http://127.0.0.1:9/do-not-send-credentials\r\n".into();
             } else {
                 match (method, endpoint) {
                     ("GET", "dirs") => {
@@ -110,6 +111,25 @@ fn fixture() -> Server {
                     ("GET", "files") => {
                         if let Some(Some(bytes)) = files.get(path) {
                             response = bytes.clone();
+                            if let Some(range) = lower
+                                .lines()
+                                .filter(|_| path != "/ignore-range.bin")
+                                .find_map(|line| line.strip_prefix("range: bytes="))
+                            {
+                                let (start, end) = range.trim().split_once('-').unwrap();
+                                let start: usize = start.parse().unwrap();
+                                let end: usize = end.parse().unwrap();
+                                if start <= end && end < bytes.len() {
+                                    response = bytes[start..=end].to_vec();
+                                    status = 206;
+                                    extra = format!(
+                                        "Content-Range: bytes {start}-{end}/{}\r\n",
+                                        bytes.len()
+                                    );
+                                } else {
+                                    status = 416;
+                                }
+                            }
                         } else {
                             status = 404;
                         }
@@ -117,6 +137,21 @@ fn fixture() -> Server {
                     ("POST", "files/upload") => {
                         files.insert(path.into(), Some(body));
                         status = 201;
+                    }
+                    ("POST", "shares") => {
+                        let value: Value = serde_json::from_slice(&body).unwrap();
+                        assert_eq!(value["scope"], 1);
+                        assert_eq!(value["paths"].as_array().unwrap().len(), 1);
+                        assert!(value["expires_at"].as_u64().unwrap() > 0);
+                        assert_eq!(value["password"], "fixture-share-password");
+                        shares.insert("fixture-share".into(), value);
+                        status = 201;
+                        extra = "X-Object-ID: fixture-share\r\n".into();
+                    }
+                    ("DELETE", "shares/fixture-share") => {
+                        if shares.remove("fixture-share").is_none() {
+                            status = 404;
+                        }
                     }
                     ("POST", "file-actions/move") => {
                         let target = query.get("target").unwrap();
@@ -199,6 +234,46 @@ async fn user_api_file_folder_preview_and_error_roundtrip() {
         std::fs::metadata(&source).unwrap().len()
     );
     let downloaded = folder.join("downloaded.txt");
+    let bytes = std::fs::read(&source).unwrap();
+    let partial = client
+        .range("note.txt", 2, 8, bytes.len() as u64)
+        .await
+        .unwrap();
+    assert_eq!(partial.bytes().await.unwrap().as_ref(), &bytes[2..=8]);
+    assert!(
+        client
+            .range("note.txt", 2, 8, bytes.len() as u64 + 1)
+            .await
+            .is_err()
+    );
+    assert!(
+        client
+            .create_share("", "fixture-share-password", 7)
+            .await
+            .is_err()
+    );
+    assert!(
+        client
+            .create_share("note.txt", "fixture-share-password", 0)
+            .await
+            .is_err()
+    );
+    let shared = client
+        .create_share("note.txt", "fixture-share-password", 7)
+        .await
+        .unwrap();
+    assert!(
+        shared
+            .url
+            .starts_with(&format!("{url}web/client/pubshares/"))
+    );
+    assert!(shared.expires_at.is_some());
+    assert!(shared.can_revoke);
+    client
+        .revoke_share(shared.id.as_deref().unwrap())
+        .await
+        .unwrap();
+    assert!(client.revoke_share("../wrong").await.is_err());
     client
         .download("note.txt", &downloaded, 1000, progress.clone())
         .await
@@ -247,6 +322,31 @@ async fn user_api_file_folder_preview_and_error_roundtrip() {
     let engine = crate::engine::Engine::test_delivery(client.clone(), folder.clone());
     assert!(
         engine
+            .share_capabilities("api-test")
+            .await
+            .unwrap()
+            .supported
+    );
+    let (stream_url, stream) = crate::streaming::start(
+        engine
+            .stream_source("api-test", "storage:note.txt")
+            .unwrap(),
+        bytes.len() as u64,
+        "note.mp4",
+    )
+    .await
+    .unwrap();
+    let partial = Http::new()
+        .get(&stream_url)
+        .header("Range", "bytes=2-8")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(partial.status(), 206);
+    assert_eq!(partial.bytes().await.unwrap().as_ref(), &bytes[2..=8]);
+    drop(stream);
+    assert!(
+        engine
             .execute("api-test", vec!["lsjson".into(), "storage:".into()])
             .await
             .unwrap()
@@ -272,6 +372,7 @@ async fn user_api_file_folder_preview_and_error_roundtrip() {
         remote: "storage:note.txt".into(),
         local: preview,
         original: Some(std::fs::read(&source).unwrap()),
+        stream: None,
     };
     engine
         .save_text_session(&mut session, "Edited via shared editor".into())
@@ -298,6 +399,18 @@ async fn user_api_file_folder_preview_and_error_roundtrip() {
             .contains("изменился")
     );
     if real.is_none() {
+        client
+            .upload("ignore-range.bin", &source, false, progress.clone())
+            .await
+            .unwrap();
+        assert!(
+            client
+                .range("ignore-range.bin", 2, 8, bytes.len() as u64)
+                .await
+                .unwrap_err()
+                .contains("Полное скачивание не начато")
+        );
+        client.delete("ignore-range.bin", false).await.unwrap();
         *client.token.lock().await = Some("expired-token".into());
         client.list("").await.unwrap(); // one bounded token refresh, not a repeated password loop.
         assert!(

@@ -14,6 +14,13 @@ use std::{
 use tokio::io::AsyncWriteExt;
 
 const MISSING: &str = "Файл, папка или бакет не найдены. Обновите список и проверьте путь.";
+fn valid_share_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+}
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Credentials {
     pub site: String,
@@ -186,6 +193,111 @@ impl Client {
             })
             .map(entry)
             .collect()
+    }
+    pub(crate) async fn range(
+        &self,
+        path: &str,
+        start: u64,
+        end: u64,
+        size: u64,
+    ) -> Result<Response, String> {
+        let path = api_path(path)?;
+        let build = |token: String| {
+            self.http
+                .get(self.endpoint("files"))
+                .query(&[("path", &path)])
+                .bearer_auth(token)
+                .header("Range", format!("bytes={start}-{end}"))
+        };
+        let mut response = build(self.token().await?)
+            .send()
+            .await
+            .map_err(network_error)?;
+        if response.status() == StatusCode::UNAUTHORIZED {
+            self.login(None).await?;
+            response = build(self.token().await?)
+                .send()
+                .await
+                .map_err(network_error)?;
+        }
+        let response = checked(response).await?;
+        let expected = format!("bytes {start}-{end}/{size}");
+        if response.status() != StatusCode::PARTIAL_CONTENT
+            || response
+                .headers()
+                .get("content-range")
+                .and_then(|h| h.to_str().ok())
+                != Some(expected.as_str())
+            || response
+                .content_length()
+                .is_some_and(|length| length != end - start + 1)
+        {
+            return Err("Delivery не поддерживает безопасное чтение участков файла. Полное скачивание не начато".into());
+        }
+        Ok(response)
+    }
+    pub(crate) async fn create_share(
+        &self,
+        path: &str,
+        password: &str,
+        days: u64,
+    ) -> Result<crate::sharing::Share, String> {
+        let path = api_path(path)?;
+        if path == "/" {
+            return Err("Выберите отдельный файл или папку, а не всё хранилище".into());
+        }
+        self.stat(&path).await?;
+        if !(1..=90).contains(&days) || password.len() > 256 {
+            return Err("Срок ссылки: от 1 до 90 дней; пароль: до 256 байт".into());
+        }
+        let expires = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| "Проверьте часы системы")?
+            .as_millis() as u64
+            + days * 86_400_000;
+        let body = json!({"name": path.rsplit('/').next().unwrap_or("Файл"), "scope": 1, "paths": [path], "expires_at": expires, "password": password});
+        let build = |token: String| {
+            self.http
+                .post(self.endpoint("shares"))
+                .bearer_auth(token)
+                .json(&body)
+        };
+        let mut response = build(self.token().await?)
+            .send()
+            .await
+            .map_err(network_error)?;
+        if response.status() == StatusCode::UNAUTHORIZED {
+            self.login(None).await?;
+            response = build(self.token().await?)
+                .send()
+                .await
+                .map_err(network_error)?;
+        }
+        if response.status() == StatusCode::FORBIDDEN
+            || response.status() == StatusCode::BAD_REQUEST
+        {
+            return Err("Delivery не разрешил создать ссылку. Проверьте право на обмен файлами; сервер может требовать пароль.".into());
+        }
+        let response = checked(response).await?;
+        let id = response.headers().get("X-Object-ID").and_then(|v| v.to_str().ok()).filter(|id| valid_share_id(id)).ok_or("Delivery не вернул идентификатор ссылки; проверьте список ссылок на сайте сервиса перед повтором")?.to_string();
+        let url = self
+            .base
+            .join(&format!("web/client/pubshares/{id}"))
+            .map_err(|_| "Неверный адрес ссылки")?;
+        Ok(crate::sharing::Share {
+            url: url.to_string(),
+            id: Some(id),
+            expires_at: Some(expires),
+            can_revoke: true,
+        })
+    }
+    pub(crate) async fn revoke_share(&self, id: &str) -> Result<(), String> {
+        if !valid_share_id(id) {
+            return Err("Неверный идентификатор ссылки".into());
+        }
+        self.request(Method::DELETE, &format!("shares/{id}"), &[])
+            .await?;
+        Ok(())
     }
     pub async fn stat(&self, path: &str) -> Result<Value, String> {
         let path = api_path(path)?;
