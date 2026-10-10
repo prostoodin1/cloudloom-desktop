@@ -1,17 +1,18 @@
 {
   "schema": 1,
-  "revision": 2,
+  "revision": 3,
   "ui": {
     "welcomeTitle": "Ваше пространство,",
     "welcomeEmphasis": "без границ.",
-    "subtitle": "Подключите свои облака и Delivery Studio Red.",
+    "subtitle": "Подключите свои облака и Delivery.",
     "tagline": "ОДНО ПРИЛОЖЕНИЕ. ВСЕ ВАШИ ОБЛАКА.",
     "accentDark": "#b6c9ad",
     "accentLight": "#43694b"
   },
   "services": {
     "delivery": {
-      "description": "Файлы Studio Red · WebDAV / SFTPGo"
+      "name": "Delivery",
+      "description": "Файлы · WebDAV / SFTPGo"
     }
   }
 }
