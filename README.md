@@ -1,15 +1,20 @@
-# Cloudloom Juniper
+# Cloudloom Kestrel
 
 A desktop file manager for multiple cloud accounts, with a profile picker, light/dark themes, real file/folder transfers and per-service setup help.
+
+![Profile picker — neutral local profile](docs/screenshots/main-menu.png)
+![Local folder — light theme](docs/screenshots/local-disk.png)
+
+Screenshots show only a neutral local showcase folder, never connected cloud accounts, credentials or studio files.
 
 ## Download for Windows and Mac
 
 See [Releases](https://github.com/prostoodin1/cloudloom-desktop/releases).
 
-- [**Download Windows installer**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Juniper_Windows_x64_Setup.exe) — Windows 10/11 x64, including WebView2 runtime setup when needed.
-- [**Download Windows portable ZIP**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Juniper_Windows_x64_Portable.zip) — extract all files, keep the resources folder and run cloudloom.exe. Requires WebView2 Runtime.
-- [**Download Mac Intel DMG**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Juniper_macOS_Intel.dmg) — Intel Macs (x86_64).
-- [**Download Mac Apple Silicon DMG**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Juniper_macOS_AppleSilicon.dmg) — M-series, ARM64, native build, no Rosetta required.
+- [**Download Windows installer**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Kestrel_Windows_x64_Setup.exe) — Windows 10/11 x64, including WebView2 runtime setup when needed.
+- [**Download Windows portable ZIP**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Kestrel_Windows_x64_Portable.zip) — extract all files, keep the resources folder and run cloudloom.exe. Requires WebView2 Runtime.
+- [**Download Mac Intel DMG**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Kestrel_macOS_Intel.dmg) — Intel Macs (x86_64).
+- [**Download Mac Apple Silicon DMG**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Kestrel_macOS_AppleSilicon.dmg) — M-series, ARM64, native build, no Rosetta required.
 - ZIP application bundles and SHA256 checksums are also provided.
 
 Requires **macOS 13 Ventura or later**. Open the DMG and copy Cloudloom into Applications.
@@ -18,17 +23,15 @@ These initial Mac builds are **ad-hoc signed, not Apple Developer ID signed or n
 
 ## Features
 
-Unreleased source changes (not yet in the downloadable Juniper binaries):
+- Signed automatic updates at startup, before opening the workspace. Offline/error fallback lets you continue with the installed version. **Older releases need one manual installation of Kestrel**; subsequent native releases can update automatically. Windows installation may require an OS prompt; macOS relaunches after installation. [Update behaviour and publishing](docs/UPDATES.md).
 
 - Per-item **… → Получить ссылку** when the connected backend advertises public-link support. A confirmation dialog is required; opening a preview never creates a public link. Delivery user-API profiles create read-only links for exactly one selected file/folder, with a 1–90 day expiry (7 days by default), optional password and immediate revocation in the result dialog. Server permissions/password policies still apply. Other providers create/retrieve their normal link; password, expiry and revocation are not promised where the adapter does not provide them. Existing Delivery WebDAV profiles do not gain user-API sharing automatically.
 - Video/audio streaming up to **50 GB (50,000,000,000 bytes)** via a random, revocable loopback URL and bounded-memory byte-range reads. No whole-file temporary copy and no public link is created. Closing the viewer cancels active requests; the URL also expires after 24 hours. Seeking requires the storage backend/server to support efficient ranged reads; Delivery responses that ignore/mismatch Range are rejected instead of downloading the entire file. Playback still consumes network traffic and provider egress charges, if applicable. System codecs/container support apply: not every MKV/AVI/HEVC file plays on every OS. Images/text keep the existing bounded temporary-preview/editor path.
-- These features require a new native application build, not a live JSON presentation update. Windows engine/proxy tests and a local SFTPGo fixture do not substitute for testing every real cloud account or macOS WebKit playback.
-
-Current released Juniper features:
+- Windows engine/proxy tests and a local SFTPGo fixture do not substitute for testing every real cloud account or macOS WebKit playback.
 
 - Single click selects; double-click or Enter opens profiles, services, folders and files. Ctrl/Cmd-click and checkboxes select multiple items. Internal drag-and-drop moves files/folders onto another folder or a breadcrumb/root within the current profile; Escape cancels. Existing names and self/descendant moves are rejected. Moves are not atomic batches; provider/network failures can leave partial results, which are reported. Local Explorer/Finder drops still upload; cross-profile moves and dragging out to the OS are not implemented.
 - Account/disk used/total storage in the profile sidebar and active profile header, refreshed every minute. Unsupported quotas stay unknown; no recursive file scans or invented totals.
-- Open files inside the app: images, video/audio with seeking and a UTF-8 text editor with Save / Ctrl+S / Cmd+S. Downloads a temporary local copy first, not instant remote streaming. Media up to 1 GiB; text up to 2 MiB. System codecs determine playback support; unsupported formats can still be downloaded.
+- Open files inside the app: streamed video/audio with seeking, images up to 1 GiB and a UTF-8 text editor up to 2 MiB with Save / Ctrl+S / Cmd+S. Images/text use a bounded temporary copy. System codecs determine playback support; unsupported formats can still be downloaded.
 - Text saves replace the remote file, first checking its content against the opening snapshot, then verifying saved bytes. Unsaved-change prompts protect close actions. This is best-effort conflict detection, not an atomic provider lock; avoid simultaneous writers. HTML/SVG/code are displayed as plain text, never executed. Temporary previews are removed on close; abandoned cache files expire after 24 hours when another preview is opened (3 GiB cache cap).
 - Centered profile selector: saved profiles left, searchable services right, blurred background.
 - Small **Помощь** button after selecting a service: dedicated credential instructions without clearing the form.
@@ -65,9 +68,10 @@ The GitHub workflow builds and tests independently on Intel and Apple Silicon ru
 
 Windows source builds require MSVC C++ Build Tools and WebView2. The same commands build Windows natively; use `npm run tauri build -- --bundles nsis` for the installer. CI checks installation, resources, engine execution, application startup and uninstallation on a clean Windows account.
 
-The public Juniper release includes Windows and both Mac variants and is not marked as a prerelease. Windows downloads are not Authenticode signed: SmartScreen may warn or block them. Release status does not remove operating-system security checks. See [release notes](docs/RELEASE.md) for verification scope and known limitations.
+The public Kestrel release includes Windows and both Mac variants and is not marked as a prerelease. Windows downloads are not Authenticode signed: SmartScreen may warn or block them. Release status does not remove operating-system security checks. See [release notes](docs/RELEASE.md) for verification scope and known limitations.
 
 ## Public repository
 
-This repository contains only the application source, not the private ideas repository or its history, local profiles, OAuth credentials or test fixtures. Public visibility does not grant an open-source license: the application's existing all-rights-reserved licensing is unchanged. Third-party components retain their respective licenses.
+The current source contains no local profiles, OAuth credentials or private cloud addresses. The [Studio Red Barcelona copy](https://github.com/Studio-Red-Barcelona/cloudloom-desktop) starts from a clean source snapshot, without personal-repository history; it is intentionally not a GitHub fork. The original personal repository retains its previous history. Both releases distribute identical signed update packages using the personal repository as the canonical update channel. Public visibility does not grant an open-source license: the application's existing all-rights-reserved licensing is unchanged. Third-party components retain their respective licenses.
+
 - Live presentation updates: instructions, service names/descriptions and welcome-screen text/accent colours update from a validated JSON catalogue without restarting the app or remounting the editor. Checks at startup, on returning to the window and every minute while visible; offline fallback. No remote executable code. New adapters/logic still need a native update. [Editing and publishing the live catalogue](docs/LIVE-UI.md).

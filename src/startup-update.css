@@ -1,0 +1,13 @@
+.startup-update { min-height: 100vh; display: grid; place-items: center; padding: 32px; background: radial-gradient(ellipse at 50% 20%, #b6c9ae12, transparent 60%), var(--bg); }
+.startup-update section { width: min(460px, 90vw); text-align: center; padding: 44px 34px; border: 1px solid var(--line); border-radius: 24px; background: var(--panel); box-shadow: 0 20px 70px var(--shadow); }
+.startup-logo { background: var(--accent); color: var(--accent-text); border-radius: 18px; width: 68px; height: 68px; display: grid; place-items: center; margin: 0 auto 26px; }
+.startup-update h1 { font-size: 23px; font-weight: 550; letter-spacing: -.5px; }
+.startup-update p { line-height: 1.7; font-size: 13px; color: var(--muted); }
+.startup-update .eyebrow { font-size: 10px; letter-spacing: 2px; }
+.startup-update .spin { color: var(--accent); margin: 16px auto; }
+.startup-update progress { display: block; width: 100%; height: 6px; accent-color: var(--accent); margin: 10px 0; }
+.startup-update small, .startup-update footer { color: var(--muted); font-size: 11px; }
+.startup-update footer { margin-top: 30px; line-height: 1.7; }
+.startup-continue { background: var(--accent); color: var(--accent-text); border-radius: 10px; padding: 13px 20px; margin: 12px 0; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.startup-update .spin { animation: spin 1s linear infinite; }

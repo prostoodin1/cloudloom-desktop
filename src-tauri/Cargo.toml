@@ -1,6 +1,6 @@
 [package]
 name = "cloudloom"
-version = "0.7.0"
+version = "0.8.0"
 description = "A universal desktop cloud file manager for studio-scale media"
 authors = ["Studio Red Barcelona"]
 license = "UNLICENSED"
@@ -26,6 +26,8 @@ tauri-plugin-log = "2"
 tokio = { version = "1", features = ["process", "io-util", "time", "sync", "fs", "macros", "net"] }
 uuid = { version = "1", features = ["v4"] }
 tauri-plugin-dialog = "2"
+tauri-plugin-updater = "=2.13.2"
+tauri-plugin-single-instance = "2"
 reqwest = { version = "0.13", default-features = false, features = ["json", "query", "stream", "rustls"] }
 tokio-util = { version = "0.7", features = ["io", "rt"] }
 futures-util = "0.3"

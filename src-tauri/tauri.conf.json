@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Cloudloom",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "identifier": "studio.red.cloudloom",
   "build": {
     "frontendDist": "../dist",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Cloudloom Juniper",
+        "title": "Cloudloom Kestrel",
         "width": 1440,
         "height": 900,
         "minWidth": 780,
@@ -27,6 +27,7 @@
     }
   },
   "bundle": {
+    "createUpdaterArtifacts": true,
     "active": true,
     "targets": "all",
     "resources": ["resources/rclone.exe", "resources/RCLONE-LICENSE.txt"],
@@ -39,6 +40,15 @@
     ],
     "android": {
       "debugApplicationIdSuffix": ".debug"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ1OTU2OTNFMDExMjVCOUQKUldTZFd4SUJQbW1WUmFoYkZHL01YVjJwa1hZSzRQRmRJbVpMNkZHazhqNTlYNzNQWHFQdnk2cWQK",
+      "endpoints": ["https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/latest.json"],
+      "requireSignedVersion": true,
+      "allowDowngrades": false,
+      "windows": { "installMode": "passive" }
     }
   }
 }

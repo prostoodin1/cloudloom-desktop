@@ -4,11 +4,22 @@ mod preview;
 mod setup;
 mod sharing;
 mod streaming;
+mod updates;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            use tauri::Manager;
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updates::Startup::default())
         .setup(|app| {
             use tauri::Manager;
             let state = engine::initialize(app.handle()).map_err(std::io::Error::other)?;
@@ -38,6 +49,7 @@ pub fn run() {
             sharing::sharing_capabilities,
             sharing::create_share,
             sharing::revoke_share,
+            updates::startup_update,
         ])
         .run(tauri::generate_context!())
         .expect("Cloudloom could not start");
