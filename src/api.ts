@@ -30,7 +30,7 @@ export const providers = [
   { id: 'storj', name: 'Storj', description: 'Распределённое хранилище', color: '#6385e0', letters: 'St', oauth: false },
   { id: 'seafile', name: 'Seafile', description: 'Библиотеки на вашем сервере', color: '#e6a64b', letters: 'Sf', oauth: false },
   { id: 'sftp', name: 'SFTP', description: 'Сервер по защищённому SSH', color: '#aa8dd1', letters: 'SSH', oauth: false },
-  { id: 'delivery', name: 'Delivery · Studio Red', description: 'delivery.studiored.es · SFTPGo / WebDAV', color: '#c47361', letters: 'SR', oauth: false },
+  { id: 'delivery', name: 'Delivery', description: 'Файлы · WebDAV / SFTPGo', color: '#c47361', letters: 'D', oauth: false },
   { id: 'nextcloud', name: 'Nextcloud', description: 'Личное или корпоративное облако', color: '#0082c9', letters: 'N', oauth: false },
   { id: 'owncloud', name: 'ownCloud', description: 'Файлы на своём сервере', color: '#345b91', letters: 'OC', oauth: false },
   { id: 'protondrive', name: 'Proton Drive', description: 'Зашифрованное облако · адаптер beta', color: '#8a6be8', letters: 'P', oauth: false },

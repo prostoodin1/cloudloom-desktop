@@ -19,7 +19,7 @@ describe('live UI data without executing remote code', () => {
     expect(guides.delivery.fields).toEqual(fields)
     expect(applyCatalog(validateCatalog({schema:1,revision:99}))).toBe(false)
     expect(applyCatalog(validateCatalog({schema:1,revision:101}))).toBe(true)
-    expect(provider.name).toBe('Delivery · Studio Red')
+    expect(provider.name).toBe('Delivery')
   })
   it('bounds actual response bytes and rejects malformed or failed responses', async () => {
     await expect(readCatalog(new Response(JSON.stringify({schema:1,revision:2})))).resolves.toMatchObject({revision:2})

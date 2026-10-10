@@ -21,6 +21,7 @@ pub fn run() {
             engine::list_files,
             engine::create_folder,
             engine::rename_item,
+            engine::move_items,
             engine::delete_item,
             engine::start_transfer,
             engine::cancel_transfer,

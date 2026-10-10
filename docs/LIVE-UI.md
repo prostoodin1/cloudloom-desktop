@@ -10,10 +10,10 @@ Harbor проверяет опубликованный `live-ui/catalog.json` в
 {
   "schema": 1,
   "revision": 2,
-  "ui": { "subtitle": "Подключите облако или Delivery Studio Red." },
+  "ui": { "subtitle": "Подключите облако или Delivery." },
   "services": {
     "delivery": {
-      "description": "Файлы Studio Red через WebDAV",
+      "description": "Файлы Delivery через WebDAV",
       "guide": {
         "intro": "Используйте подтверждённый администратором WebDAV URL.",
         "steps": ["Получите адрес подключения у администратора Delivery.", "Введите адрес, логин и пароль приложения в Cloudloom."]

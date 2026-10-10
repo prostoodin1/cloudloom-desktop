@@ -67,6 +67,7 @@ pub struct Engine {
     tasks: Mutex<Vec<Task>>,
     cancel: Mutex<HashMap<String, Arc<Notify>>>,
     slots: Arc<Semaphore>,
+    moves: tokio::sync::Mutex<()>,
     pub(crate) previews: tokio::sync::Mutex<HashMap<String, crate::preview::Session>>,
 }
 
@@ -166,10 +167,103 @@ pub fn initialize(app: &AppHandle) -> Result<Engine, String> {
         tasks: Mutex::new(tasks),
         cancel: Mutex::new(HashMap::new()),
         slots: Arc::new(Semaphore::new(3)),
+        moves: tokio::sync::Mutex::new(()),
         previews: tokio::sync::Mutex::new(HashMap::new()),
     })
 }
 impl Engine {
+    async fn move_entries(
+        &self,
+        id: &str,
+        sources: Vec<String>,
+        destination: String,
+    ) -> Result<MoveReply, String> {
+        let _moving = self.moves.lock().await;
+        let profile = self.profile(id)?;
+        let plan = move_plan(&sources, &destination)?;
+        if self
+            .tasks
+            .lock()
+            .map_err(err)?
+            .iter()
+            .any(|t| t.profile_id == id && matches!(t.status.as_str(), "active" | "queued"))
+        {
+            return Err("Дождитесь завершения передач этого профиля перед перемещением".into());
+        }
+        let previews = self.previews.lock().await;
+        for source in &sources {
+            let source_remote = remote(&profile, source)?;
+            if previews.values().any(|p| {
+                p.profile_id == id
+                    && (p.remote == source_remote
+                        || p.remote.starts_with(&format!("{source_remote}/")))
+            }) {
+                return Err("Закройте просмотр файлов из перемещаемой папки".into());
+            }
+        }
+        let stat = self
+            .execute(
+                id,
+                vec![
+                    "lsjson".into(),
+                    remote(&profile, &destination)?,
+                    "--stat".into(),
+                    "--retries".into(),
+                    "1".into(),
+                ],
+            )
+            .await?;
+        let stat: Value = serde_json::from_str(&stat).map_err(err)?;
+        if stat["IsDir"] != true {
+            return Err("Место назначения должно быть папкой".into());
+        }
+        // Preflight the whole batch before touching any source. Never merge existing trees.
+        let mut directories = vec![];
+        for (source, target) in sources.iter().zip(&plan) {
+            let source_stat = self
+                .execute(
+                    id,
+                    vec![
+                        "lsjson".into(),
+                        remote(&profile, source)?,
+                        "--stat".into(),
+                        "--retries".into(),
+                        "1".into(),
+                    ],
+                )
+                .await?;
+            let source_stat: Value = serde_json::from_str(&source_stat).map_err(err)?;
+            directories.push(source_stat["IsDir"] == true);
+            self.require_new_destination(id, &remote(&profile, target)?)
+                .await?;
+        }
+        let mut reply = MoveReply {
+            moved: vec![],
+            error: None,
+        };
+        for ((source, target), directory) in sources.iter().zip(&plan).zip(directories) {
+            let result = async {
+                let target_remote = remote(&profile, target)?;
+                self.require_new_destination(id, &target_remote).await?;
+                let mut args = vec![if directory { "move".into() } else { "moveto".into() }, remote(&profile, source)?, target_remote,
+                    "--immutable".into(), "--ignore-existing".into(), "--retries".into(), "1".into()];
+                if directory { args.extend(["--create-empty-src-dirs".into(), "--delete-empty-src-dirs".into()]); }
+                self.execute(id, args).await?;
+                // ignore-existing preserves a concurrent destination; do not claim success if source remains.
+                match self.execute(id, vec!["lsjson".into(), remote(&profile, source)?, "--stat".into(), "--retries".into(), "1".into()]).await {
+                    Err(e) if e.starts_with("Файл, папка или бакет не найдены") => Ok(()),
+                    Err(e) => Err(e),
+                    Ok(_) => Err("Источник остался на месте. Возможно, в папке назначения появился одноимённый элемент; проверьте обе папки.".into()),
+                }
+            }.await;
+            if let Err(error) = result {
+                reply.error = Some(format!("{source}: {error}"));
+                break;
+            }
+            reply.moved.push(source.clone());
+        }
+        Ok(reply)
+    }
     fn config(&self, id: &str) -> PathBuf {
         self.directory.join(format!("{id}.conf"))
     }
@@ -791,6 +885,62 @@ pub async fn rename_item(
         .await?;
     Ok(())
 }
+#[derive(Serialize)]
+pub struct MoveReply {
+    moved: Vec<String>,
+    error: Option<String>,
+}
+fn move_plan(sources: &[String], destination: &str) -> Result<Vec<String>, String> {
+    safe_path(destination)?;
+    if sources.is_empty()
+        || sources.len() > 500
+        || (!destination.is_empty() && destination.split('/').any(str::is_empty))
+    {
+        return Err("Некорректный список или путь перемещения".into());
+    }
+    let mut targets = std::collections::HashSet::new();
+    let mut plan = vec![];
+    for source in sources {
+        safe_path(source)?;
+        if source.is_empty() || source.split('/').any(str::is_empty) {
+            return Err("Нельзя перемещать корень хранилища".into());
+        }
+        let (parent, name) = source.rsplit_once('/').unwrap_or(("", source));
+        if parent == destination
+            || destination == source
+            || destination.starts_with(&format!("{source}/"))
+        {
+            return Err(
+                "Нельзя переместить папку внутрь себя или оставить элемент в той же папке".into(),
+            );
+        }
+        if sources
+            .iter()
+            .any(|other| other != source && source.starts_with(&format!("{other}/")))
+        {
+            return Err("Не выбирайте одновременно папку и её содержимое".into());
+        }
+        let target = if destination.is_empty() {
+            name.into()
+        } else {
+            format!("{destination}/{name}")
+        };
+        if !targets.insert(target.clone()) {
+            return Err("В списке перемещения есть одинаковые имена".into());
+        }
+        plan.push(target);
+    }
+    Ok(plan)
+}
+#[tauri::command]
+pub async fn move_items(
+    engine: State<'_, Engine>,
+    id: String,
+    sources: Vec<String>,
+    destination: String,
+) -> Result<MoveReply, String> {
+    engine.move_entries(&id, sources, destination).await
+}
 #[tauri::command]
 pub async fn delete_item(
     engine: State<'_, Engine>,
@@ -948,6 +1098,33 @@ pub fn cancel_transfer(engine: State<'_, Engine>, id: String) -> Result<(), Stri
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn move_paths_are_bounded_and_never_overlap() {
+        let strings = |values: &[&str]| values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            move_plan(&strings(&["a/photo.jpg", "a/folder"]), "").unwrap(),
+            strings(&["photo.jpg", "folder"])
+        );
+        for (sources, destination) in [
+            (strings(&[""]), "archive"),
+            (strings(&["folder"]), "folder/nested"),
+            (strings(&["folder"]), "folder"),
+            (strings(&["a/file"]), "a"),
+            (strings(&["folder", "folder/file"]), "archive"),
+            (strings(&["a/file", "b/file"]), "archive"),
+            (strings(&["../file"]), "archive"),
+            (strings(&["file"]), "../escape"),
+            (strings(&["file"]), "a//b"),
+            (strings(&["a/"]), "archive"),
+            (strings(&["file", "file"]), "archive"),
+            (vec![], "archive"),
+        ] {
+            assert!(
+                move_plan(&sources, destination).is_err(),
+                "{sources:?} -> {destination}"
+            );
+        }
+    }
     use super::*;
     #[test]
     fn rejects_path_escape_and_root_deletion_inputs() {
@@ -1118,6 +1295,7 @@ mod tests {
             tasks: Mutex::new(vec![]),
             cancel: Mutex::new(HashMap::new()),
             slots: Arc::new(Semaphore::new(3)),
+            moves: tokio::sync::Mutex::new(()),
             previews: tokio::sync::Mutex::new(HashMap::new()),
         };
         let id = "test";
@@ -1286,6 +1464,71 @@ mod tests {
                 .is_err()
         );
         assert!(!bounded.exists());
+        // Real file + nested folder moves through the production command path, using only test storage.
+        std::fs::create_dir_all(storage.join("archive")).unwrap();
+        std::fs::create_dir_all(storage.join("photos/empty")).unwrap();
+        std::fs::write(storage.join("photos/image.bin"), &content).unwrap();
+        let moved = engine
+            .move_entries(
+                id,
+                vec!["note.txt".into(), "photos".into()],
+                "archive".into(),
+            )
+            .await
+            .unwrap();
+        assert!(moved.error.is_none(), "{:?}", moved.error);
+        assert_eq!(moved.moved.len(), 2);
+        assert!(!storage.join("note.txt").exists());
+        assert!(!storage.join("photos").exists());
+        assert_eq!(
+            std::fs::read(storage.join("archive/photos/image.bin")).unwrap(),
+            content
+        );
+        assert!(storage.join("archive/photos/empty").is_dir());
+        std::fs::write(storage.join("note.txt"), b"do not overwrite").unwrap();
+        assert!(
+            engine
+                .move_entries(id, vec!["archive/note.txt".into()], "".into())
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read(storage.join("note.txt")).unwrap(),
+            b"do not overwrite"
+        );
+        assert!(storage.join("archive/note.txt").exists());
+        assert!(
+            engine
+                .move_entries(id, vec!["archive".into()], "archive/photos".into())
+                .await
+                .is_err()
+        );
+        assert!(
+            engine
+                .move_entries(id, vec!["archive/note.txt".into()], "note.txt".into())
+                .await
+                .is_err()
+        );
+        let moved = engine
+            .move_entries(id, vec!["archive/photos".into()], "".into())
+            .await
+            .unwrap();
+        assert!(moved.error.is_none(), "{:?}", moved.error);
+        assert!(storage.join("photos/empty").is_dir());
+        // Batch collision preflight must leave even earlier non-conflicting sources untouched.
+        std::fs::write(storage.join("first.txt"), b"first").unwrap();
+        assert!(
+            engine
+                .move_entries(
+                    id,
+                    vec!["first.txt".into(), "note.txt".into()],
+                    "archive".into()
+                )
+                .await
+                .is_err()
+        );
+        assert!(storage.join("first.txt").exists());
+        assert!(!storage.join("archive/first.txt").exists());
         // This directory was created by this test, outside all user storage.
         std::fs::remove_dir_all(directory).unwrap();
     }
