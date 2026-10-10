@@ -22,6 +22,8 @@ pub struct Profile {
     pub provider: String,
     pub root: String,
     pub ready: bool,
+    #[serde(default)]
+    pub transport: String,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,13 +70,14 @@ pub struct Engine {
     cancel: Mutex<HashMap<String, Arc<Notify>>>,
     slots: Arc<Semaphore>,
     moves: tokio::sync::Mutex<()>,
+    delivery: Mutex<HashMap<String, Arc<crate::delivery::Client>>>,
     pub(crate) previews: tokio::sync::Mutex<HashMap<String, crate::preview::Session>>,
 }
 
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
-fn safe_name(value: &str) -> Result<(), String> {
+pub(crate) fn safe_name(value: &str) -> Result<(), String> {
     if value.trim().is_empty()
         || value == "."
         || value == ".."
@@ -84,7 +87,7 @@ fn safe_name(value: &str) -> Result<(), String> {
     }
     Ok(())
 }
-fn safe_path(value: &str) -> Result<(), String> {
+pub(crate) fn safe_path(value: &str) -> Result<(), String> {
     if value.starts_with('/')
         || value.contains('\\')
         || value.contains(':')
@@ -168,10 +171,61 @@ pub fn initialize(app: &AppHandle) -> Result<Engine, String> {
         cancel: Mutex::new(HashMap::new()),
         slots: Arc::new(Semaphore::new(3)),
         moves: tokio::sync::Mutex::new(()),
+        delivery: Mutex::new(HashMap::new()),
         previews: tokio::sync::Mutex::new(HashMap::new()),
     })
 }
 impl Engine {
+    #[cfg(test)]
+    pub(crate) fn test_delivery(client: Arc<crate::delivery::Client>, directory: PathBuf) -> Self {
+        Self {
+            binary: directory.join("must-not-run-rclone.exe"),
+            directory,
+            password: "test-only".into(),
+            profiles: Mutex::new(vec![Profile {
+                id: "api-test".into(),
+                name: "Test API".into(),
+                provider: "delivery".into(),
+                root: "".into(),
+                ready: true,
+                transport: "sftpgo-api".into(),
+            }]),
+            pending: tokio::sync::Mutex::new(HashMap::new()),
+            tasks: Mutex::new(vec![]),
+            cancel: Mutex::new(HashMap::new()),
+            slots: Arc::new(Semaphore::new(3)),
+            moves: tokio::sync::Mutex::new(()),
+            delivery: Mutex::new(HashMap::from([("api-test".into(), client)])),
+            previews: tokio::sync::Mutex::new(HashMap::new()),
+        }
+    }
+    pub(crate) fn delivery_client(
+        &self,
+        id: &str,
+    ) -> Result<Option<Arc<crate::delivery::Client>>, String> {
+        let is_api = self
+            .profiles
+            .lock()
+            .map_err(err)?
+            .iter()
+            .any(|p| p.id == id && p.ready && p.transport == "sftpgo-api");
+        if !is_api {
+            return Ok(None);
+        }
+        let mut clients = self.delivery.lock().map_err(err)?;
+        if let Some(client) = clients.get(id) {
+            return Ok(Some(client.clone()));
+        }
+        let secret = crate::delivery::vault(id)?.get_password().map_err(|_| {
+            "Пароль Delivery недоступен в системном хранилище. Подключите профиль заново"
+                .to_string()
+        })?;
+        let credentials = serde_json::from_str(&secret)
+            .map_err(|_| "Настройки Delivery повреждены. Подключите профиль заново".to_string())?;
+        let client = Arc::new(crate::delivery::Client::new(credentials)?);
+        clients.insert(id.into(), client.clone());
+        Ok(Some(client))
+    }
     async fn move_entries(
         &self,
         id: &str,
@@ -284,6 +338,11 @@ impl Engine {
         cmd
     }
     pub(crate) async fn execute(&self, id: &str, args: Vec<String>) -> Result<String, String> {
+        if let Some(client) = self.delivery_client(id)? {
+            return tokio::time::timeout(Duration::from_secs(300), client.execute(&args))
+                .await
+                .map_err(|_| "Delivery не ответил за 5 минут".to_string())?;
+        }
         let output = tokio::time::timeout(
             Duration::from_secs(300),
             self.command(id).args(args).output(),
@@ -388,7 +447,7 @@ pub fn local_is_directory(path: String) -> Result<bool, String> {
 
 fn service_help_url(provider: &str) -> Result<String, String> {
     if provider == "delivery" {
-        return Ok("https://docs.sftpgo.com/latest/webdav/".into());
+        return Ok("https://docs.sftpgo.com/latest/rest-api/".into());
     }
     let page = match provider {
         "nextcloud" | "owncloud" => "webdav/",
@@ -472,7 +531,7 @@ pub fn open_service_help(provider: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn connect_profile(
     engine: State<'_, Engine>,
-    request: ConnectRequest,
+    mut request: ConnectRequest,
 ) -> Result<Value, String> {
     if request.name.trim().is_empty() {
         return Err("Укажите название профиля".into());
@@ -509,7 +568,65 @@ pub async fn connect_profile(
     if !allowed.contains(&request.provider.as_str()) {
         return Err("Провайдер не поддерживается".into());
     }
-    if ["delivery", "nextcloud", "owncloud"].contains(&request.provider.as_str()) {
+    if request.provider == "delivery" {
+        let url = crate::delivery::site_url(
+            request.options.get("url").map(String::as_str).unwrap_or(""),
+        )?;
+        let user = request
+            .options
+            .get("user")
+            .filter(|v| !v.trim().is_empty())
+            .ok_or("Введите логин Delivery")?
+            .clone();
+        let password = request
+            .options
+            .get("pass")
+            .filter(|v| !v.is_empty())
+            .ok_or("Введите пароль Delivery")?
+            .clone();
+        let credentials = crate::delivery::Credentials {
+            site: url.to_string(),
+            user,
+            password,
+        };
+        let saved = serde_json::to_string(&credentials).map_err(err)?;
+        let client = Arc::new(crate::delivery::Client::new(credentials)?);
+        client
+            .login(request.options.get("2fa").map(String::as_str))
+            .await?;
+        client.list("").await?;
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let profile = Profile {
+            id: id.clone(),
+            name: request.name.trim().into(),
+            provider: "delivery".into(),
+            root: "".into(),
+            ready: true,
+            transport: "sftpgo-api".into(),
+        };
+        crate::delivery::vault(&id)?
+            .set_password(&saved)
+            .map_err(|_| "Не удалось сохранить пароль Delivery в системном хранилище")?;
+        engine.profiles.lock().map_err(err)?.push(profile.clone());
+        if let Err(error) = engine.save_profiles() {
+            engine.profiles.lock().map_err(err)?.retain(|p| p.id != id);
+            let _ = crate::delivery::vault(&id)?.delete_credential();
+            return Err(error);
+        }
+        engine.delivery.lock().map_err(err)?.insert(id, client);
+        return Ok(json!({"profile":profile}));
+    }
+    if ["nextcloud", "owncloud"].contains(&request.provider.as_str()) {
+        let url = crate::setup::cloud_url(
+            &request.provider,
+            request.options.get("url").map(String::as_str).unwrap_or(""),
+            request
+                .options
+                .get("user")
+                .map(String::as_str)
+                .unwrap_or(""),
+        )?;
+        request.options.insert("url".into(), url);
         require_https_endpoint(request.options.get("url"))?;
     }
     if ["wasabi", "r2"].contains(&request.provider.as_str()) {
@@ -594,6 +711,7 @@ pub async fn connect_profile(
             request.root.trim_matches('/').into()
         },
         ready: false,
+        transport: String::new(),
     };
     let mut args = vec![
         "config".into(),
@@ -773,7 +891,7 @@ pub async fn cancel_connect(engine: State<'_, Engine>, id: String) -> Result<(),
 }
 #[tauri::command]
 pub async fn disconnect_profile(engine: State<'_, Engine>, id: String) -> Result<(), String> {
-    engine.profile(&id)?;
+    let profile = engine.profile(&id)?;
     if engine
         .tasks
         .lock()
@@ -783,9 +901,33 @@ pub async fn disconnect_profile(engine: State<'_, Engine>, id: String) -> Result
     {
         return Err("Сначала завершите или отмените передачи этого профиля".into());
     }
+    let saved_credential = if profile.transport == "sftpgo-api" {
+        crate::delivery::vault(&id)?.get_password().ok()
+    } else {
+        None
+    };
+    if profile.transport == "sftpgo-api" {
+        match crate::delivery::vault(&id)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Err(_) => {
+                return Err(
+                    "Не удалось удалить сохранённый пароль Delivery. Повторите отключение".into(),
+                );
+            }
+        }
+        engine.delivery.lock().map_err(err)?.remove(&id);
+    }
     engine.profiles.lock().map_err(err)?.retain(|p| p.id != id);
-    engine.save_profiles()?;
-    std::fs::remove_file(engine.config(&id)).map_err(err)?;
+    if let Err(error) = engine.save_profiles() {
+        engine.profiles.lock().map_err(err)?.push(profile.clone());
+        if let Some(secret) = saved_credential {
+            crate::delivery::vault(&id)?.set_password(&secret).map_err(|_| "Не удалось восстановить пароль после ошибки сохранения. Подключите Delivery заново")?;
+        }
+        return Err(error);
+    }
+    if profile.transport != "sftpgo-api" {
+        std::fs::remove_file(engine.config(&id)).map_err(err)?;
+    }
     Ok(())
 }
 #[tauri::command]
@@ -1037,6 +1179,73 @@ pub async fn start_transfer(
         }
         task.status = "active".into();
         engine.emit_task(&app, task.clone());
+        match engine.delivery_client(&id) {
+            Ok(Some(client)) => {
+                use std::sync::atomic::{AtomicU64, Ordering};
+                let progress = Arc::new(AtomicU64::new(0));
+                let is_upload = task.direction == "upload";
+                let remote_path = if is_upload { &target } else { &source };
+                let local_path = PathBuf::from(if is_upload { &source } else { &target });
+                let remote_path = remote_path.strip_prefix("storage:").unwrap_or("");
+                let mut work = Box::pin(client.transfer(
+                    remote_path,
+                    &local_path,
+                    is_upload,
+                    directory,
+                    progress.clone(),
+                ));
+                let mut tick = tokio::time::interval(Duration::from_secs(1));
+                let mut last_bytes = 0;
+                let mut last_time = std::time::Instant::now();
+                let result = loop {
+                    tokio::select! {
+                        result = &mut work => break Some(result),
+                        _ = signal.notified() => break None,
+                        _ = tick.tick() => {
+                            task.bytes = progress.load(Ordering::Relaxed);
+                            let elapsed = last_time.elapsed().as_secs_f64();
+                            task.speed = if elapsed > 0.0 { task.bytes.saturating_sub(last_bytes) as f64 / elapsed } else { 0.0 };
+                            last_bytes = task.bytes; last_time = std::time::Instant::now();
+                            engine.emit_task(&app, task.clone());
+                        }
+                    }
+                };
+                drop(work);
+                task.bytes = progress.load(Ordering::Relaxed);
+                task.speed = 0.0;
+                match result {
+                    Some(Ok(())) => {
+                        task.status = "complete".into();
+                        task.total = task.bytes;
+                    }
+                    Some(Err(error)) => {
+                        task.status = "error".into();
+                        task.error = Some(format!(
+                            "{error} Частично переданные файлы могут остаться; проверьте место назначения."
+                        ));
+                    }
+                    None => {
+                        task.status = "cancelled".into();
+                        task.error = Some("Передача отменена. Частично переданные файлы могут остаться в месте назначения.".into());
+                    }
+                }
+                engine.emit_task(&app, task.clone());
+                if let Ok(mut map) = engine.cancel.lock() {
+                    map.remove(&task.id);
+                }
+                return;
+            }
+            Err(error) => {
+                task.status = "error".into();
+                task.error = Some(error);
+                engine.emit_task(&app, task.clone());
+                if let Ok(mut map) = engine.cancel.lock() {
+                    map.remove(&task.id);
+                }
+                return;
+            }
+            Ok(None) => {}
+        }
         let args = vec![
             if directory { "copy" } else { "copyto" }.into(),
             source,
@@ -1270,7 +1479,7 @@ mod tests {
         }
         assert_eq!(
             service_help_url("delivery").unwrap(),
-            "https://docs.sftpgo.com/latest/webdav/"
+            "https://docs.sftpgo.com/latest/rest-api/"
         );
     }
     #[tokio::test]
@@ -1296,6 +1505,7 @@ mod tests {
             cancel: Mutex::new(HashMap::new()),
             slots: Arc::new(Semaphore::new(3)),
             moves: tokio::sync::Mutex::new(()),
+            delivery: Mutex::new(HashMap::new()),
             previews: tokio::sync::Mutex::new(HashMap::new()),
         };
         let id = "test";
@@ -1412,6 +1622,7 @@ mod tests {
             provider: "alias".into(),
             root: "".into(),
             ready: true,
+            transport: String::new(),
         });
         let initial = "Привет\r\nредактор\r\n".as_bytes().to_vec();
         std::fs::write(storage.join("note.txt"), &initial).unwrap();

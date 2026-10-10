@@ -10,7 +10,7 @@ import { useChoiceActivation, useFileInteractions } from './useFileInteractions'
 import './file-interactions.css'
 import { usageLabel, usagePercent } from './lib/storage'
 import { formatBytes } from './lib/format'
-import { guides, guideUrl, releaseName } from './services'
+import { guides, guideUrl, releaseName, connectionSummary } from './services'
 import './App.css'
 
 type Prompt = { kind: 'folder' | 'rename' | 'delete'; entry?: Entry }
@@ -124,7 +124,7 @@ export default function App() {
   const picked = entries.filter(e => selected.has(e.path))
   const activeTasks = tasks.filter(t => ['active','queued'].includes(t.status))
   const updateOption = (key: string, value: string) => setOptions(o => ({ ...o, [key]: value }))
-  const selectService = (id: string) => { setConnecting(id); setShowHelp(false); setFormName(service(id).name); setRoot(''); setOptions({}); setReply(null); setAdvanced(false); setConnectError('') }
+  const selectService = (id: string) => { setConnecting(id); setShowHelp(false); setFormName(service(id).name); setRoot(''); setOptions(id === 'delivery' ? { url: 'https://delivery.studiored.es/web/' } : {}); setReply(null); setAdvanced(false); setConnectError('') }
   const openGuide = () => {
     if (!connecting) return
     if (desktop) void call('open_service_help', { provider: connecting }).catch(e => setConnectError(String(e)))
@@ -133,7 +133,7 @@ export default function App() {
 
   const receiveConnect = async (result: ConnectReply) => {
     setReply(result)
-    if (result.profile) { setProfiles(await call<Profile[]>('list_profiles')); setConnecting(null); setReply(null); notify('Профиль подключён'); enter(result.profile) }
+    if (result.profile) { setProfiles(await call<Profile[]>('list_profiles')); setConnecting(null); setOptions({}); setReply(null); notify('Профиль подключён'); enter(result.profile) }
     else setAnswer(typeof result.question?.default === 'boolean' ? String(result.question.default) : String(result.question?.default ?? ''))
   }
   const connect = async () => {
@@ -144,7 +144,7 @@ export default function App() {
     } catch(e) { setConnectError(String(e)); setReply(null) }
     finally { setBusy(false) }
   }
-  const closeConnect = () => { if (busy) return; if (reply?.id) void call('cancel_connect', { id: reply.id }); setConnecting(null); setReply(null) }
+  const closeConnect = () => { if (busy) return; if (reply?.id) void call('cancel_connect', { id: reply.id }); setConnecting(null); setOptions({}); setReply(null) }
   const disconnect = async (p: Profile) => {
     try { await call('disconnect_profile', { id: p.id }); setProfiles(items => items.filter(item => item.id !== p.id)); if (profile?.id === p.id) { setProfile(null); setEntries([]) }; notify('Профиль отключён. Данные в облаке сохранены.') } catch(e) { setError(String(e)) }
   }
@@ -253,12 +253,14 @@ export default function App() {
     </div>}
 
     {connecting && <div className="modal-backdrop"><div className="modal connect-modal" role="dialog" aria-modal="true" aria-labelledby="connect-title"><button className="modal-close" aria-label="Закрыть подключение" onClick={closeConnect} disabled={busy}><X size={18}/></button><ServiceIcon id={connecting}/><div className="connect-heading"><h2 id="connect-title">{service(connecting).name}</h2><button className="help-toggle" type="button" aria-label={`Помощь с подключением ${service(connecting).name}`} aria-expanded={showHelp} aria-controls="service-help" title="Как получить ключи и войти" onClick={() => setShowHelp(v => !v)}><CircleHelp size={16}/><span>Помощь</span></button></div><p className="modal-subtitle">{busy || reply?.question ? 'Завершите настройку подключения' : 'Добавьте свой профиль в Cloudloom'}</p>
-      {showHelp && <section id="service-help" className="service-help" aria-label={`Инструкция для ${service(connecting).name}`}><h3>Как подключить {service(connecting).name}</h3><p>{guides[connecting].intro}</p><ol>{guides[connecting].steps.map(step => <li key={step}>{step}</li>)}</ol>{guides[connecting].note && <p className="help-note">{guides[connecting].note}</p>}<button className="help-link" type="button" onClick={openGuide}>Подробная инструкция rclone<ExternalLink size={13}/></button><small>Откроется в браузере. Никому не передавайте ключи и токены.</small></section>}
+      {showHelp && <section id="service-help" className="service-help" aria-label={`Инструкция для ${service(connecting).name}`}><h3>Как подключить {service(connecting).name}</h3><p>{guides[connecting].intro}</p><ol>{guides[connecting].steps.map(step => <li key={step}>{step}</li>)}</ol>{guides[connecting].note && <p className="help-note">{guides[connecting].note}</p>}<button className="help-link" type="button" onClick={openGuide}>Официальная инструкция<ExternalLink size={13}/></button><small>Откроется в браузере. Никому не передавайте ключи и токены.</small></section>}
       {busy ? <div className="auth-wait"><LoaderCircle size={31} className="spin"/><h3>Подключаем профиль…</h3><p>{service(connecting).oauth ? 'Официальная страница входа откроется в системном браузере. Выберите аккаунт и разрешите доступ. Окно Cloudloom обновится после входа.' : 'Проверяем учётные данные и доступ к хранилищу. Это может занять некоторое время.'}</p></div> : <form onSubmit={e => { e.preventDefault(); void connect() }}>
         {reply?.question ? <div className="question"><p>{reply.error}</p><label>{reply.question.help}{reply.question.examples?.length ? <select value={answer} onChange={e => setAnswer(e.target.value)}>{!reply.question.exclusive && <option value={answer}>{answer || 'По умолчанию'}</option>}{reply.question.examples.map((example,index) => <option key={index} value={example.Value}>{example.Help || example.Value}</option>)}</select> : typeof reply.question.default === 'boolean' ? <select value={answer} onChange={e => setAnswer(e.target.value)}><option value="true">Да</option><option value="false">Нет</option></select> : <input autoFocus type={reply.question.password ? 'password' : 'text'} value={answer} onChange={e => setAnswer(e.target.value)}/>}</label></div> : <>
           <label>Название профиля<input required autoFocus value={formName} onChange={e => setFormName(e.target.value)} placeholder="Например: Рабочий аккаунт"/></label>
           {connecting === 'alias' && <label>Локальная папка<div className="input-with-button"><input required value={root} onChange={e => setRoot(e.target.value)} placeholder="Выберите папку на компьютере"/><button type="button" onClick={() => void open({directory:true}).then(p => typeof p === 'string' && setRoot(p)).catch(e => setConnectError(String(e)))}>Выбрать</button></div></label>}
-          {guides[connecting].fields?.map(field => <label key={field.key}>{field.label}<input required={field.required} type={field.secret ? 'password' : 'text'} autoComplete="off" value={options[field.key] ?? ''} placeholder={field.placeholder} onChange={e => updateOption(field.key,e.target.value)}/></label>)}
+          <p className="setup-summary">{connectionSummary(connecting)}</p>
+          {guides[connecting].fields?.filter(field => !field.advanced || advanced).map(field => <label key={field.key}>{field.label}<input required={field.required} type={field.secret ? 'password' : 'text'} autoComplete={field.key === '2fa' ? 'one-time-code' : 'off'} value={options[field.key] ?? ''} placeholder={field.placeholder} onChange={e => updateOption(field.key,e.target.value)}/>{['key_file','known_hosts_file'].includes(field.key) && <button className="help-link" type="button" onClick={() => void open({ multiple:false, title:field.label }).then(p => { if (typeof p === 'string') updateOption(field.key,p) }).catch(e => setConnectError(String(e)))}>Выбрать файл…</button>}</label>)}
+          {!service(connecting).oauth && guides[connecting].fields?.some(field => field.advanced) && <button className="advanced-toggle" type="button" aria-expanded={advanced} onClick={() => setAdvanced(v => !v)}><Settings2 size={14}/>{advanced ? 'Скрыть дополнительные настройки' : 'Дополнительные настройки'}<ChevronRight size={13}/></button>}
           {['b2','azureblob','storj','sftp'].includes(connecting) && <label>{connecting === 'b2' || connecting === 'storj' ? 'Бакет (необязательно)' : connecting === 'azureblob' ? 'Контейнер (необязательно)' : 'Папка относительно домашней (необязательно)'}<input value={root} onChange={e => setRoot(e.target.value)} placeholder="Пусто — корень хранилища"/></label>}
           {connecting === 'seafile' && <label>Двухфакторная авторизация<select value={options['2fa'] ?? 'false'} onChange={e => updateOption('2fa',e.target.value)}><option value="false">Не включена</option><option value="true">Включена — запросить код</option></select></label>}
           {connecting === 'google cloud storage' && <><label>Бакет (необязательно)<input value={root} onChange={e => setRoot(e.target.value)} placeholder="my-studio-bucket"/></label><label>Номер проекта<input value={options.project_number ?? ''} onChange={e => updateOption('project_number',e.target.value)} placeholder="Нужен для списка бакетов"/></label></>}

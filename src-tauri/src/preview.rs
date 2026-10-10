@@ -115,6 +115,12 @@ impl Engine {
         local: &PathBuf,
         limit: u64,
     ) -> Result<(), String> {
+        if let Some(client) = self.delivery_client(id)? {
+            let source = source
+                .strip_prefix("storage:")
+                .ok_or("Некорректный путь Delivery")?;
+            return client.preview_download(source, local, limit).await;
+        }
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]

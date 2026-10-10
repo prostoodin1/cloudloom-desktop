@@ -1,4 +1,4 @@
-# Cloudloom Iris
+# Cloudloom Juniper
 
 A desktop file manager for multiple cloud accounts, with a profile picker, light/dark themes, real file/folder transfers and per-service setup help.
 
@@ -6,10 +6,10 @@ A desktop file manager for multiple cloud accounts, with a profile picker, light
 
 See [Releases](https://github.com/prostoodin1/cloudloom-desktop/releases).
 
-- [**Download Windows installer**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Iris_Windows_x64_Setup.exe) — Windows 10/11 x64, including WebView2 runtime setup when needed.
-- [**Download Windows portable ZIP**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Iris_Windows_x64_Portable.zip) — extract all files, keep the resources folder and run cloudloom.exe. Requires WebView2 Runtime.
-- [**Download Mac Intel DMG**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Iris_macOS_Intel.dmg) — Intel Macs (x86_64).
-- [**Download Mac Apple Silicon DMG**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Iris_macOS_AppleSilicon.dmg) — M-series, ARM64, native build, no Rosetta required.
+- [**Download Windows installer**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Juniper_Windows_x64_Setup.exe) — Windows 10/11 x64, including WebView2 runtime setup when needed.
+- [**Download Windows portable ZIP**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Juniper_Windows_x64_Portable.zip) — extract all files, keep the resources folder and run cloudloom.exe. Requires WebView2 Runtime.
+- [**Download Mac Intel DMG**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Juniper_macOS_Intel.dmg) — Intel Macs (x86_64).
+- [**Download Mac Apple Silicon DMG**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Juniper_macOS_AppleSilicon.dmg) — M-series, ARM64, native build, no Rosetta required.
 - ZIP application bundles and SHA256 checksums are also provided.
 
 Requires **macOS 13 Ventura or later**. Open the DMG and copy Cloudloom into Applications.
@@ -27,9 +27,13 @@ These initial Mac builds are **ad-hoc signed, not Apple Developer ID signed or n
 - Actual folder browsing, file/folder upload/download, rename, confirmed deletion, multi-select, list/grid views and drag/drop.
 - Bounded concurrent transfers, actual progress and cancellation. Interrupted transfers are labelled on restart; cross-restart resumption is not implemented.
 - Configurations encrypted individually. The encryption password is held in **macOS Keychain**, or Windows Credential Manager on Windows. Tokens are not stored in browser localStorage.
-- 27 service entries with individual setup guides: Google Drive, OneDrive, Dropbox, Google Cloud Storage, Box, pCloud, Yandex Disk, WebDAV, S3-compatible storage, MEGA, Koofr, HiDrive, Backblaze B2, Azure Blob Storage, Storj, Seafile, SFTP, local folders, Delivery, Nextcloud, ownCloud, Proton Drive, OpenDrive, Jottacloud, PikPak, Wasabi and Cloudflare R2. Some are named presets for the same WebDAV/S3 adapter. Proton Drive's adapter is beta. Delivery requires an administrator-provided HTTPS WebDAV endpoint and enabled access; its `/web/` page alone is not sufficient.
+- 27 service entries with individual setup guides: Google Drive, OneDrive, Dropbox, Google Cloud Storage, Box, pCloud, Yandex Disk, WebDAV, S3-compatible storage, MEGA, Koofr, HiDrive, Backblaze B2, Azure Blob Storage, Storj, Seafile, SFTP, local folders, Delivery, Nextcloud, ownCloud, Proton Drive, OpenDrive, Jottacloud, PikPak, Wasabi and Cloudflare R2. Some are named presets for the same WebDAV/S3 adapter. Proton Drive's adapter is beta.
 
-Access depends on account permissions and provider-specific credentials. Google Drive may require a personal Desktop OAuth client. Each service's help explains setup and links to [rclone documentation](https://rclone.org/overview/). Do not send passwords, keys or tokens in issue reports.
+Delivery accepts the ordinary HTTPS website address (including `/web/`), username and password through the SFTPGo user API, with optional HTTP 2FA code in advanced settings. No separate WebDAV endpoint or manual token is required for new profiles. The server must permit user API access and file operations. Old WebDAV profiles remain unchanged. Credentials are stored directly in the OS credential vault; total quota is unavailable through this adapter.
+
+Nextcloud and classic ownCloud construct standard WebDAV URLs from website addresses; existing full endpoints still work. Spaces/nonstandard servers require their exact endpoint. Optional fields are in advanced settings. SFTP includes file pickers for checked known_hosts and SSH keys, without disabling server verification.
+
+Access depends on account permissions and provider-specific credentials. Google Drive may require a personal Desktop OAuth client. App passwords and storage API keys remain required where the provider requires them. Each service's help explains setup and links to official documentation. Do not send passwords, keys or tokens in issue reports.
 
 Existing destinations are rejected to avoid overwriting. Folder/prefix behaviour and operation costs depend on the provider. Cloud sign-in and large-transfer behaviour must still be checked with target accounts; no demo accounts or files are fabricated.
 
@@ -53,7 +57,7 @@ The GitHub workflow builds and tests independently on Intel and Apple Silicon ru
 
 Windows source builds require MSVC C++ Build Tools and WebView2. The same commands build Windows natively; use `npm run tauri build -- --bundles nsis` for the installer. CI checks installation, resources, engine execution, application startup and uninstallation on a clean Windows account.
 
-The public Iris release includes Windows and both Mac variants and is not marked as a prerelease. Windows downloads are not Authenticode signed: SmartScreen may warn or block them. Release status does not remove operating-system security checks. See [release notes](docs/RELEASE.md) for verification scope and known limitations.
+The public Juniper release includes Windows and both Mac variants and is not marked as a prerelease. Windows downloads are not Authenticode signed: SmartScreen may warn or block them. Release status does not remove operating-system security checks. See [release notes](docs/RELEASE.md) for verification scope and known limitations.
 
 ## Public repository
 

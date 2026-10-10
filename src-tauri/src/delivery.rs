@@ -1,0 +1,569 @@
+//! SFTPGo user API only. No administrator endpoints, browser cookies, or remote code.
+use futures_util::TryStreamExt;
+use reqwest::{Client as Http, Method, Response, StatusCode};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::{
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
+use tokio::io::AsyncWriteExt;
+
+const MISSING: &str = "Файл, папка или бакет не найдены. Обновите список и проверьте путь.";
+#[derive(Serialize, Deserialize)]
+pub(crate) struct Credentials {
+    pub site: String,
+    pub user: String,
+    pub password: String,
+}
+pub(crate) fn vault(id: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new("studio.red.cloudloom.delivery", id)
+        .map_err(|_| "Системное хранилище паролей недоступно".into())
+}
+pub(crate) fn site_url(input: &str) -> Result<tauri::Url, String> {
+    let input = input.trim();
+    let mut url = tauri::Url::parse(&if input.contains("://") {
+        input.to_string()
+    } else {
+        format!("https://{input}")
+    })
+    .map_err(|_| "Укажите адрес сайта Delivery")?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err("Нужен HTTPS-адрес сайта без логина и пароля в ссылке".into());
+    }
+    let path = url.path().trim_end_matches('/');
+    let prefix = path
+        .find("/web/")
+        .or_else(|| path.strip_suffix("/web").map(str::len))
+        .or_else(|| path.find("/api/v2/"))
+        .or_else(|| path.strip_suffix("/api/v2").map(str::len));
+    let path = format!("{}/", prefix.map(|i| &path[..i]).unwrap_or(path));
+    url.set_path(&path);
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url)
+}
+fn status_error(status: StatusCode) -> String {
+    match status.as_u16() {
+        401 => "Delivery не принял вход. Проверьте логин и пароль; при 2FA введите свежий код в дополнительных настройках или подключите профиль заново.".into(),
+        403 => "Delivery запретил операцию этому аккаунту. Проверьте права пользователя и разрешение HTTP/API-входа.".into(),
+        404 => MISSING.into(),
+        409 => "В месте назначения уже есть одноимённый элемент".into(),
+        413 => "Delivery отклонил файл из-за ограничения размера".into(),
+        429 => "Слишком много запросов к Delivery. Подождите перед повторным входом.".into(),
+        300..=399 => "Delivery перенаправляет запрос. Введите конечный HTTPS-адрес сайта; пароль на другой адрес не отправлен.".into(),
+        _ => format!("Delivery не выполнил операцию (HTTP {}). Проверьте права и доступность сервера.", status.as_u16()),
+    }
+}
+fn network_error(_: reqwest::Error) -> String {
+    "Не удалось связаться с Delivery. Проверьте адрес, сеть и HTTPS-сертификат сервера.".into()
+}
+async fn checked(response: Response) -> Result<Response, String> {
+    if response.status().is_success() {
+        Ok(response)
+    } else {
+        Err(status_error(response.status()))
+    }
+}
+async fn bounded_json(mut response: Response, limit: usize) -> Result<Value, String> {
+    let mut bytes = vec![];
+    while let Some(chunk) = response.chunk().await.map_err(network_error)? {
+        if bytes.len().saturating_add(chunk.len()) > limit {
+            return Err("Ответ Delivery слишком большой".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|_| "Delivery вернул неожиданный ответ. Проверьте адрес сайта".into())
+}
+pub(crate) struct Client {
+    credentials: Credentials,
+    base: tauri::Url,
+    http: Http,
+    token: tokio::sync::Mutex<Option<String>>,
+}
+impl Client {
+    pub fn new(credentials: Credentials) -> Result<Self, String> {
+        let base = site_url(&credentials.site)?;
+        let http = Http::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(15))
+            .read_timeout(Duration::from_secs(90))
+            .user_agent("Cloudloom")
+            .build()
+            .map_err(|_| "Не удалось создать защищённое подключение".to_string())?;
+        Ok(Self {
+            credentials,
+            base,
+            http,
+            token: tokio::sync::Mutex::new(None),
+        })
+    }
+    fn endpoint(&self, endpoint: &str) -> tauri::Url {
+        self.base
+            .join(&format!("api/v2/user/{endpoint}"))
+            .expect("fixed API path")
+    }
+    pub async fn login(&self, otp: Option<&str>) -> Result<(), String> {
+        let mut token = self.token.lock().await;
+        let mut request = self
+            .http
+            .get(self.endpoint("token"))
+            .basic_auth(&self.credentials.user, Some(&self.credentials.password));
+        if let Some(otp) = otp.filter(|v| !v.is_empty()) {
+            request = request.header("X-SFTPGO-OTP", otp);
+        }
+        let response = checked(request.send().await.map_err(network_error)?).await?;
+        let value = bounded_json(response, 64 * 1024).await?;
+        let value = value["access_token"]
+            .as_str()
+            .filter(|s| !s.is_empty() && s.len() <= 16384)
+            .ok_or("Delivery не выдал токен пользовательского входа")?;
+        *token = Some(value.into());
+        Ok(())
+    }
+    async fn token(&self) -> Result<String, String> {
+        let cached = self.token.lock().await.clone();
+        if let Some(token) = cached {
+            return Ok(token);
+        }
+        self.login(None).await?;
+        self.token
+            .lock()
+            .await
+            .clone()
+            .ok_or("Подключите Delivery заново".into())
+    }
+    async fn request(
+        &self,
+        method: Method,
+        endpoint: &str,
+        query: &[(&str, &str)],
+    ) -> Result<Response, String> {
+        let token = self.token().await?;
+        let build = |token| {
+            self.http
+                .request(method.clone(), self.endpoint(endpoint))
+                .query(query)
+                .bearer_auth(token)
+        };
+        let response = build(token).send().await.map_err(network_error)?;
+        if response.status() == StatusCode::UNAUTHORIZED {
+            self.login(None).await?;
+            return checked(
+                build(self.token().await?)
+                    .send()
+                    .await
+                    .map_err(network_error)?,
+            )
+            .await;
+        }
+        checked(response).await
+    }
+    pub async fn list(&self, path: &str) -> Result<Vec<Value>, String> {
+        let path = api_path(path)?;
+        let response = self
+            .request(Method::GET, "dirs", &[("path", &path)])
+            .await?;
+        let value = bounded_json(response, 8 * 1024 * 1024).await?;
+        let rows = value
+            .as_array()
+            .filter(|r| r.len() <= 20000)
+            .ok_or("Delivery вернул неверный список файлов")?;
+        rows.iter()
+            .filter(|v| {
+                v["mode"].as_u64().is_some_and(|mode| {
+                    mode & 134217728 == 0 && (mode & 2147483648 != 0 || mode & 2401763328 == 0)
+                })
+            })
+            .map(entry)
+            .collect()
+    }
+    pub async fn stat(&self, path: &str) -> Result<Value, String> {
+        let path = api_path(path)?;
+        if path == "/" {
+            self.list("").await?;
+            return Ok(json!({"Name":"", "Path":"", "Size":0, "IsDir":true}));
+        }
+        let (parent, name) = path.rsplit_once('/').ok_or("Некорректный путь")?;
+        self.list(parent)
+            .await?
+            .into_iter()
+            .find(|v| v["Name"] == name)
+            .ok_or(MISSING.into())
+    }
+    async fn new_destination(&self, path: &str) -> Result<(), String> {
+        match self.stat(path).await {
+            Ok(_) => Err("В месте назначения уже есть одноимённый элемент".into()),
+            Err(e) if e == MISSING => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+    pub async fn mkdir(&self, path: &str) -> Result<(), String> {
+        let path = api_path(path)?;
+        self.request(Method::POST, "dirs", &[("path", &path)])
+            .await?;
+        Ok(())
+    }
+    pub async fn rename(&self, source: &str, target: &str) -> Result<(), String> {
+        let source = api_path(source)?;
+        let target = api_path(target)?;
+        if source == "/" || target == source || target.starts_with(&format!("{source}/")) {
+            return Err("Нельзя переместить корень или папку внутрь себя".into());
+        }
+        self.new_destination(&target).await?;
+        self.request(
+            Method::POST,
+            "file-actions/move",
+            &[("path", &source), ("target", &target)],
+        )
+        .await?;
+        Ok(())
+    }
+    pub async fn delete(&self, path: &str, directory: bool) -> Result<(), String> {
+        let path = api_path(path)?;
+        if path == "/" {
+            return Err("Нельзя удалить корень хранилища".into());
+        }
+        self.request(
+            Method::DELETE,
+            if directory { "dirs" } else { "files" },
+            &[("path", &path)],
+        )
+        .await?;
+        Ok(())
+    }
+    pub async fn download(
+        &self,
+        path: &str,
+        local: &Path,
+        limit: u64,
+        progress: Arc<AtomicU64>,
+    ) -> Result<(), String> {
+        self.download_inner(path, local, limit, progress, false)
+            .await
+    }
+    pub async fn preview_download(
+        &self,
+        path: &str,
+        local: &Path,
+        limit: u64,
+    ) -> Result<(), String> {
+        self.download_inner(path, local, limit, Arc::new(AtomicU64::new(0)), true)
+            .await
+    }
+    async fn download_inner(
+        &self,
+        path: &str,
+        local: &Path,
+        limit: u64,
+        progress: Arc<AtomicU64>,
+        cleanup: bool,
+    ) -> Result<(), String> {
+        let path = api_path(path)?;
+        let mut response = self
+            .request(Method::GET, "files", &[("path", &path)])
+            .await?;
+        if response.content_length().is_some_and(|n| n > limit) {
+            return Err("Файл превышает лимит загрузки".into());
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = tokio::fs::File::from_std(
+            options
+                .open(local)
+                .map_err(|_| "Не удалось создать локальный файл без перезаписи")?,
+        );
+        // We own this newly created file. Never remove an existing file on a failed create_new.
+        let result = async {
+            let mut bytes = 0u64;
+            while let Some(chunk) = response.chunk().await.map_err(network_error)? {
+                bytes = bytes
+                    .checked_add(chunk.len() as u64)
+                    .ok_or("Файл слишком большой")?;
+                if bytes > limit {
+                    return Err("Файл превышает лимит загрузки".into());
+                }
+                file.write_all(&chunk)
+                    .await
+                    .map_err(|_| "Не удалось записать локальный файл")?;
+                progress.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+            }
+            file.sync_all()
+                .await
+                .map_err(|_| "Не удалось сохранить локальный файл")?;
+            Ok(())
+        }
+        .await;
+        drop(file);
+        if cleanup && result.is_err() {
+            let _ = std::fs::remove_file(local);
+        }
+        result
+    }
+    pub async fn upload(
+        &self,
+        path: &str,
+        local: &Path,
+        overwrite: bool,
+        progress: Arc<AtomicU64>,
+    ) -> Result<(), String> {
+        let path = api_path(path)?;
+        if !overwrite {
+            self.new_destination(&path).await?;
+        }
+        let token = self.token().await?;
+        let file = tokio::fs::File::open(local)
+            .await
+            .map_err(|_| "Не удалось открыть исходный файл")?;
+        let length = file
+            .metadata()
+            .await
+            .map_err(|_| "Не удалось прочитать размер файла")?
+            .len();
+        if !file
+            .metadata()
+            .await
+            .map_err(|_| "Не удалось проверить исходный файл")?
+            .is_file()
+        {
+            return Err("Выберите обычный файл".into());
+        }
+        let stream = tokio_util::io::ReaderStream::new(file).inspect_ok(move |chunk| {
+            progress.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+        });
+        let response = self
+            .http
+            .post(self.endpoint("files/upload"))
+            .query(&[("path", &path)])
+            .bearer_auth(token)
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .header(reqwest::header::CONTENT_LENGTH, length)
+            .body(reqwest::Body::wrap_stream(stream))
+            .send()
+            .await
+            .map_err(network_error)?;
+        checked(response).await?;
+        Ok(())
+    }
+    pub async fn execute(&self, args: &[String]) -> Result<String, String> {
+        let operation = args.first().map(String::as_str).unwrap_or("");
+        let source = || {
+            args.get(1)
+                .and_then(|p| p.strip_prefix("storage:"))
+                .ok_or("Некорректный путь Delivery".to_string())
+        };
+        let result = match operation {
+            "lsjson" => {
+                let path = source()?;
+                if args.iter().any(|v| v == "--stat") {
+                    self.stat(path).await?
+                } else {
+                    json!(self.list(path).await?)
+                }
+            }
+            "about" => json!({}), // User API does not expose trustworthy account disk totals.
+            "mkdir" => {
+                self.mkdir(source()?).await?;
+                json!(null)
+            }
+            "move" | "moveto" => {
+                let target = args
+                    .get(2)
+                    .and_then(|p| p.strip_prefix("storage:"))
+                    .ok_or("Некорректный путь назначения")?;
+                self.rename(source()?, target).await?;
+                json!(null)
+            }
+            "purge" | "deletefile" => {
+                self.delete(source()?, operation == "purge").await?;
+                json!(null)
+            }
+            "copyto" => {
+                let local = args.get(1).ok_or("Нет исходного файла")?;
+                let target = args
+                    .get(2)
+                    .and_then(|p| p.strip_prefix("storage:"))
+                    .ok_or("Нет пути назначения")?;
+                self.upload(target, Path::new(local), true, Arc::new(AtomicU64::new(0)))
+                    .await?;
+                json!(null)
+            }
+            _ => return Err("Эта операция Delivery не поддерживается".into()),
+        };
+        serde_json::to_string(&result).map_err(|_| "Неверный ответ Delivery".into())
+    }
+    pub async fn transfer(
+        &self,
+        remote: &str,
+        local: &Path,
+        upload: bool,
+        directory: bool,
+        progress: Arc<AtomicU64>,
+    ) -> Result<(), String> {
+        let remote = api_path(remote)?;
+        let mut queue = vec![(remote, local.to_path_buf(), directory)];
+        let mut count = 0;
+        while let Some((remote, local, directory)) = queue.pop() {
+            count += 1;
+            if count > 100000 {
+                return Err("Слишком много элементов в папке; передайте её частями".into());
+            }
+            if directory {
+                if upload {
+                    self.new_destination(&remote).await?;
+                    self.mkdir(&remote).await?;
+                    let mut entries = tokio::fs::read_dir(&local)
+                        .await
+                        .map_err(|_| "Не удалось прочитать локальную папку")?;
+                    while let Some(entry) = entries
+                        .next_entry()
+                        .await
+                        .map_err(|_| "Не удалось прочитать локальную папку")?
+                    {
+                        let kind = entry
+                            .file_type()
+                            .await
+                            .map_err(|_| "Не удалось прочитать тип файла")?;
+                        if !kind.is_file() && !kind.is_dir() {
+                            return Err("Символические ссылки не загружаются. Выберите обычные файлы и папки".into());
+                        }
+                        let name = entry
+                            .file_name()
+                            .into_string()
+                            .map_err(|_| "Имя файла не в UTF-8")?;
+                        crate::engine::safe_name(&name)?;
+                        queue.push((
+                            format!("{}/{name}", remote.trim_end_matches('/')),
+                            entry.path(),
+                            kind.is_dir(),
+                        ));
+                    }
+                } else {
+                    tokio::fs::create_dir(&local)
+                        .await
+                        .map_err(|_| "Не удалось создать папку без перезаписи")?;
+                    for entry in self.list(&remote).await? {
+                        let name = entry["Name"].as_str().ok_or("Некорректное имя файла")?;
+                        crate::engine::safe_name(name)?;
+                        safe_local_name(name)?;
+                        queue.push((
+                            format!("{}/{name}", remote.trim_end_matches('/')),
+                            local.join(name),
+                            entry["IsDir"] == true,
+                        ));
+                    }
+                }
+            } else if upload {
+                self.upload(&remote, &local, false, progress.clone())
+                    .await?;
+            } else {
+                let size = self.stat(&remote).await?["Size"]
+                    .as_u64()
+                    .ok_or("Неизвестный размер файла")?;
+                self.download(&remote, &local, size, progress.clone())
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+}
+fn safe_local_name(name: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let stem = name.split('.').next().unwrap_or("").to_ascii_uppercase();
+        if name.ends_with(['.', ' '])
+            || [
+                "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+                "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8",
+                "LPT9",
+            ]
+            .contains(&stem.as_str())
+        {
+            return Err(
+                "Имя файла не поддерживается Windows; переименуйте его перед скачиванием".into(),
+            );
+        }
+    }
+    let _ = name;
+    Ok(())
+}
+fn api_path(path: &str) -> Result<String, String> {
+    let path = path.trim_start_matches('/');
+    crate::engine::safe_path(path)?;
+    if path.split('/').any(|part| part.is_empty()) && !path.is_empty() {
+        return Err("Некорректный путь Delivery".into());
+    }
+    Ok(format!("/{path}"))
+}
+fn entry(value: &Value) -> Result<Value, String> {
+    let name = value["name"]
+        .as_str()
+        .ok_or("Delivery вернул файл без имени")?;
+    crate::engine::safe_name(name)?;
+    let directory = value["mode"]
+        .as_u64()
+        .ok_or("Delivery вернул неизвестный тип файла")?
+        & 2147483648
+        != 0;
+    Ok(
+        json!({"Name":name,"Path":name,"Size":if directory {0} else {value["size"].as_u64().ok_or("Delivery не сообщил размер файла")?},"IsDir":directory,"ModTime":value["last_modified"].as_str().unwrap_or(""),"MimeType":""}),
+    )
+}
+
+#[cfg(test)]
+#[path = "delivery_integration_tests.rs"]
+mod integration_tests;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn addresses_accept_browser_links_but_never_insecure_or_embedded_secrets() {
+        for url in [
+            "delivery.studiored.es",
+            "https://delivery.studiored.es/web/",
+            "https://delivery.studiored.es/web/client/login?next=/x#form",
+        ] {
+            assert_eq!(
+                site_url(url).unwrap().as_str(),
+                "https://delivery.studiored.es/"
+            );
+        }
+        assert_eq!(
+            site_url("https://files.example.com/team/web/client/login")
+                .unwrap()
+                .as_str(),
+            "https://files.example.com/team/"
+        );
+        for url in [
+            "http://files.example.com",
+            "https://user:pass@files.example.com",
+            "file:///x",
+        ] {
+            assert!(site_url(url).is_err());
+        }
+        assert!(api_path("../outside").is_err());
+        assert!(api_path("a\\b").is_err());
+        assert!(entry(&json!({"name":"../escape","mode":0,"size":1})).is_err());
+        assert!(entry(&json!({"name":"file","mode":0})).is_err());
+        assert_eq!(
+            entry(&json!({"name":"folder","mode":2147483648u64})).unwrap()["IsDir"],
+            true
+        );
+        assert!(!status_error(StatusCode::UNAUTHORIZED).contains("access_token"));
+    }
+}
