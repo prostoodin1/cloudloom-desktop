@@ -29,6 +29,7 @@ fn fixture() -> Server {
         let mut files: HashMap<String, Option<Vec<u8>>> = HashMap::from([("/".into(), None)]);
         let mut shares = HashMap::<String, Value>::new();
         let mut retry_uploads = 0u32;
+        let mut dropped_upload_response = false;
         while !stopped.load(Ordering::Relaxed) {
             let (stream, _) = match listener.accept() {
                 Ok(s) => s,
@@ -142,6 +143,11 @@ fn fixture() -> Server {
                         } else {
                             files.insert(path.into(), Some(body));
                             status = 201;
+                            // Server saved bytes but the connection died before the ACK.
+                            if path.contains(".cloudloom-") && !dropped_upload_response {
+                                dropped_upload_response = true;
+                                continue;
+                            }
                         }
                     }
                     ("POST", "shares") => {
@@ -241,7 +247,7 @@ async fn user_api_file_folder_preview_and_error_roundtrip() {
     );
     progress.store(0, Ordering::Relaxed);
     client
-        .upload("retry-once.txt", &source, false, progress.clone())
+        .upload_inner("/retry-once.txt", &source, progress.clone())
         .await
         .unwrap();
     assert_eq!(
@@ -333,6 +339,24 @@ async fn user_api_file_folder_preview_and_error_roundtrip() {
         std::fs::read(copy.join("after-interruption.txt")).unwrap(),
         b"continued"
     );
+    // A same-sized but different destination must not be silently accepted or overwritten.
+    std::fs::write(local_dir.join("file.txt"), b"CHANG!").unwrap();
+    assert!(
+        client
+            .transfer("tree", &local_dir, true, true, progress.clone(), true)
+            .await
+            .is_err()
+    );
+    std::fs::write(local_dir.join("file.txt"), b"nested").unwrap();
+    std::fs::write(copy.join("file.txt"), b"WRONG!").unwrap();
+    assert!(
+        client
+            .transfer("tree", &copy, false, true, progress.clone(), true)
+            .await
+            .is_err()
+    );
+    assert_eq!(std::fs::read(copy.join("file.txt")).unwrap(), b"WRONG!");
+    std::fs::write(copy.join("file.txt"), b"nested").unwrap();
     progress.store(0, Ordering::Relaxed);
     client
         .transfer("tree", &copy, false, true, progress.clone(), true)

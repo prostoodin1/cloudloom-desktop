@@ -11,7 +11,7 @@ use std::{
     },
     time::Duration,
 };
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const MISSING: &str = "Файл, папка или бакет не найдены. Обновите список и проверьте путь.";
 const UPLOAD_ATTEMPTS: u32 = 5;
@@ -361,8 +361,22 @@ impl Client {
         limit: u64,
         progress: Arc<AtomicU64>,
     ) -> Result<(), String> {
-        self.download_inner(path, local, limit, progress, false)
-            .await
+        // Publish only completed bytes. A dropped/cancelled future can leave its
+        // unique partial file, but never a truncated file at the final name.
+        let temporary =
+            local.with_file_name(format!(".cloudloom-{}.partial", uuid::Uuid::new_v4()));
+        let result = self
+            .download_inner(path, &temporary, limit, progress, true)
+            .await;
+        if result.is_ok() {
+            // Unlike rename on Unix, hard_link fails if the destination exists.
+            let published = tokio::fs::hard_link(&temporary, local).await.map_err(|_| {
+                "Не удалось сохранить файл без перезаписи. Проверьте место назначения".to_string()
+            });
+            let _ = tokio::fs::remove_file(&temporary).await;
+            return published;
+        }
+        result
     }
     pub async fn preview_download(
         &self,
@@ -385,6 +399,7 @@ impl Client {
         let mut response = self
             .request(Method::GET, "files", &[("path", &path)])
             .await?;
+        let expected = response.content_length();
         if response.content_length().is_some_and(|n| n > limit) {
             return Err("Файл превышает лимит загрузки".into());
         }
@@ -415,6 +430,9 @@ impl Client {
                     .map_err(|_| "Не удалось записать локальный файл")?;
                 progress.fetch_add(chunk.len() as u64, Ordering::Relaxed);
             }
+            if expected.is_some_and(|expected| bytes != expected) {
+                return Err("Delivery передал файл не полностью. Повторите передачу".into());
+            }
             file.sync_all()
                 .await
                 .map_err(|_| "Не удалось сохранить локальный файл")?;
@@ -437,7 +455,72 @@ impl Client {
         let path = api_path(path)?;
         if !overwrite {
             self.new_destination(&path).await?;
+            let (parent, _) = path.rsplit_once('/').ok_or("Некорректный путь")?;
+            let temporary = format!("{parent}/.cloudloom-{}.partial", uuid::Uuid::new_v4());
+            self.new_destination(&temporary).await?;
+            let result = async {
+                self.upload_inner(&temporary, local, progress).await?;
+                if !self.matches_local(&temporary, local).await? {
+                    return Err("Проверка загруженного файла не прошла. Повторите передачу".into());
+                }
+                self.rename(&temporary, &path).await
+            }
+            .await;
+            if result.is_err() {
+                let _ = self.delete(&temporary, false).await;
+            }
+            return result;
         }
+        self.upload_inner(&path, local, progress).await
+    }
+
+    // Compare bytes with bounded memory; equal size alone is not sufficient.
+    async fn matches_local(&self, path: &str, local: &Path) -> Result<bool, String> {
+        let metadata = tokio::fs::metadata(local)
+            .await
+            .map_err(|_| "Не удалось проверить локальный файл")?;
+        let stat = self.stat(path).await?;
+        if stat["IsDir"] != false || stat["Size"].as_u64() != Some(metadata.len()) {
+            return Ok(false);
+        }
+        let path = api_path(path)?;
+        let mut response = self
+            .request(Method::GET, "files", &[("path", &path)])
+            .await?;
+        let mut file = tokio::fs::File::open(local)
+            .await
+            .map_err(|_| "Не удалось открыть локальный файл")?;
+        let mut bytes = 0u64;
+        while let Some(chunk) = response.chunk().await.map_err(network_error)? {
+            bytes = bytes
+                .checked_add(chunk.len() as u64)
+                .ok_or("Файл слишком большой")?;
+            if bytes > metadata.len() {
+                return Ok(false);
+            }
+            // Reader chunks are bounded; never buffer the whole file.
+            for part in chunk.chunks(64 * 1024) {
+                let mut buffer = vec![0; part.len()];
+                if file.read_exact(&mut buffer).await.is_err() || buffer != part {
+                    return Ok(false);
+                }
+            }
+        }
+        let mut tail = [0u8; 1];
+        Ok(bytes == metadata.len()
+            && file
+                .read(&mut tail)
+                .await
+                .map_err(|_| "Не удалось проверить файл")?
+                == 0)
+    }
+
+    async fn upload_inner(
+        &self,
+        path: &str,
+        local: &Path,
+        progress: Arc<AtomicU64>,
+    ) -> Result<(), String> {
         let metadata = tokio::fs::metadata(local)
             .await
             .map_err(|_| "Не удалось прочитать исходный файл")?;
@@ -619,16 +702,14 @@ impl Client {
                     .len();
                 if resume {
                     match self.stat(&remote).await {
-                        Ok(value)
-                            if value["IsDir"] == false && value["Size"].as_u64() == Some(size) =>
-                        {
+                        Ok(value) if value["IsDir"] == false && self.matches_local(&remote, &local).await? => {
                             progress.fetch_add(size, Ordering::Relaxed);
                             continue;
                         }
                         Ok(value) if value["IsDir"] == true => {
                             return Err("На месте файла уже находится папка".into());
                         }
-                        Ok(_) => self.upload(&remote, &local, true, progress.clone()).await?,
+                        Ok(_) => return Err("Файл назначения отличается от исходного. Он сохранён; выберите другое имя или папку".into()),
                         Err(error) if error == MISSING => {
                             self.upload(&remote, &local, false, progress.clone())
                                 .await?
@@ -647,12 +728,11 @@ impl Client {
                     let local_size = std::fs::metadata(&local)
                         .map_err(|_| "Не удалось проверить локальный файл")?
                         .len();
-                    if local_size == size {
+                    if local_size == size && self.matches_local(&remote, &local).await? {
                         progress.fetch_add(size, Ordering::Relaxed);
                         continue;
                     }
-                    std::fs::remove_file(&local)
-                        .map_err(|_| "Не удалось заменить незавершённый локальный файл")?;
+                    return Err("Локальный файл отличается от исходного. Он сохранён; выберите другое место назначения".into());
                 }
                 self.download(&remote, &local, size, progress.clone())
                     .await?;
