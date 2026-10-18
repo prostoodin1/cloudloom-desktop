@@ -1405,10 +1405,9 @@ async fn begin_transfer(
             "2".into(),
         ];
         if resume {
-            args.push("--size-only".into());
-        } else {
-            args.push("--immutable".into());
+            args.push("--checksum".into());
         }
+        args.push("--immutable".into());
         match engine.command(&id).args(args).stdout(Stdio::null()).spawn() {
             Err(_) => {
                 task.status = "error".into();
