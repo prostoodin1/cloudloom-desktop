@@ -454,6 +454,7 @@ async fn user_api_file_folder_preview_and_error_roundtrip() {
     }
     client.delete("renamed", true).await.unwrap();
     client.delete("note.txt", false).await.unwrap();
+    client.delete("retry-once.txt", false).await.unwrap();
     assert!(client.list("").await.unwrap().is_empty());
     // The test exclusively created this UUID directory; no user files are removed.
     std::fs::remove_dir_all(folder).unwrap();
