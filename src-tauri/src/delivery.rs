@@ -96,6 +96,7 @@ pub(crate) struct Client {
     credentials: Credentials,
     base: tauri::Url,
     http: Http,
+    upload_http: Http,
     token: tokio::sync::Mutex<Option<String>>,
 }
 impl Client {
@@ -108,10 +109,20 @@ impl Client {
             .user_agent("Cloudloom")
             .build()
             .map_err(|_| "Не удалось создать защищённое подключение".to_string())?;
+        // reqwest's read timeout also runs while waiting for response headers,
+        // including the time spent streaming the request body. Large uploads
+        // need an inactivity deadline, not a total time-to-headers deadline.
+        let upload_http = Http::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(15))
+            .user_agent("Cloudloom")
+            .build()
+            .map_err(|_| "Не удалось создать подключение для загрузки".to_string())?;
         Ok(Self {
             credentials,
             base,
             http,
+            upload_http,
             token: tokio::sync::Mutex::new(None),
         })
     }
@@ -556,16 +567,16 @@ impl Client {
                     progress.fetch_add(chunk.len() as u64, Ordering::Relaxed);
                 }
             });
-            let response = self
-                .http
+            let request = self
+                .upload_http
                 .post(self.endpoint("files/upload"))
                 .query(&[("path", &path)])
                 .bearer_auth(self.token().await?)
                 .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
                 .header(reqwest::header::CONTENT_LENGTH, length)
-                .body(reqwest::Body::wrap_stream(stream))
-                .send()
-                .await;
+                .body(reqwest::Body::wrap_stream(stream));
+            let response =
+                upload_with_idle_timeout(request, progress.clone(), Duration::from_secs(120)).await;
             let retryable = match response {
                 Ok(response) if response.status().is_success() => return Ok(()),
                 Ok(response) if response.status() == StatusCode::UNAUTHORIZED => {
@@ -579,7 +590,7 @@ impl Client {
                     matches!(status.as_u16(), 408 | 425 | 429 | 500 | 502 | 503 | 504)
                 }
                 Err(error) => {
-                    last_error = network_error(error);
+                    last_error = error;
                     true
                 }
             };
@@ -754,6 +765,31 @@ impl Client {
             }
         }
         Ok(())
+    }
+}
+async fn upload_with_idle_timeout(
+    request: reqwest::RequestBuilder,
+    progress: Arc<AtomicU64>,
+    idle: Duration,
+) -> Result<Response, String> {
+    let send = request.send();
+    tokio::pin!(send);
+    let mut tick = tokio::time::interval((idle / 4).min(Duration::from_secs(1)));
+    let mut last_bytes = progress.load(Ordering::Relaxed);
+    let mut last_progress = tokio::time::Instant::now();
+    loop {
+        tokio::select! {
+            result = &mut send => return result.map_err(network_error),
+            _ = tick.tick() => {
+                let bytes = progress.load(Ordering::Relaxed);
+                if bytes != last_bytes {
+                    last_bytes = bytes;
+                    last_progress = tokio::time::Instant::now();
+                } else if last_progress.elapsed() >= idle {
+                    return Err("Delivery не передаёт данные и не отвечает. Передача будет повторена".into());
+                }
+            }
+        }
     }
 }
 fn safe_local_name(name: &str) -> Result<(), String> {
