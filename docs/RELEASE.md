@@ -2,6 +2,7 @@
 
 ## Что нового
 
+- **Надёжная загрузка 0.8.1.** Временные сетевые сбои автоматически повторяются с паузой; для обычных облаков увеличены безопасные повторы и тайм-ауты. У прерванной передачи появляется кнопка «Повторить». При повторе папки Delivery уже переданные файлы сверяются по размеру, недостающие отправляются, а незавершённый файл загружается заново.
 - **Автообновление при запуске.** До входа в рабочее пространство приложение проверяет новую версию, скачивает подписанный пакет, проверяет подпись и устанавливает обновление с перезапуском. Без сети или при ошибке можно продолжить в текущей версии. Повторный запуск открывает существующее окно, а не второй установщик. Juniper и более старым версиям нужен один ручной переход на Kestrel.
 - **… → Получить ссылку** для файлов и папок у подключений с поддержкой обмена. Создание требует отдельного подтверждения. Для новых Delivery API-профилей — только чтение, пароль, срок 1–90 дней и отключение созданной ссылки. Права/политики сервера сохраняются. У других адаптеров срок, пароль и отзыв через приложение не обещаются.
 - **Потоковые видео и аудио до 50 ГБ** без полной временной копии на диске. Перемотка использует чтение участков; возможности сервиса и системные кодеки влияют на результат. MKV/AVI/HEVC не гарантированно воспроизводятся на каждой системе. Просмотр не создаёт публичной ссылки. Трафик и тарифы провайдера продолжают действовать.
@@ -22,7 +23,7 @@ CI runs frontend/Rust tests and independently builds/verifies Windows x64, Mac I
 
 Sharing and byte-range reads are tested with a disposable local SFTPGo account. Browser tests exercise dialogs, playback, seeking, text saves and themes; a real rclone/proxy playback test is separate from mocked UI commands. A virtual 50 GB source tests 64-bit ranges and cancellation, not a real 50 GB upload to a user's account. These checks do not certify every cloud account, codec, macOS WebKit playback path or a complete future-version OS upgrade on every system.
 
-Images retain temporary previews up to 1 GiB; UTF-8 text editing is limited to 2 MiB, with Save / Ctrl+S / Cmd+S. Conflict detection is best-effort, not an atomic lock. Code, HTML and SVG are displayed as text, never executed. Transfers and batch moves can leave partial results after failures/cancellation; cross-restart resumption is not implemented. Existing transfer destinations are rejected. Cross-profile moves and dragging out to Explorer/Finder are not implemented.
+Images retain temporary previews up to 1 GiB; UTF-8 text editing is limited to 2 MiB, with Save / Ctrl+S / Cmd+S. Conflict detection is best-effort, not an atomic lock. Code, HTML and SVG are displayed as text, never executed. Failed/cancelled transfers can be resumed during the same app session. Cross-restart resumption is not implemented; after restarting, select the source again. New transfers still reject existing destinations, while the explicit retry is limited to its original source and target. Batch moves can leave partial results after failures/cancellation. Cross-profile moves and dragging out to Explorer/Finder are not implemented.
 
 **Updater signatures are not publisher certificates.** Windows is not Authenticode signed; Mac is ad-hoc signed, not Developer ID signed or notarized. SmartScreen/Gatekeeper can warn or block. Do not disable OS security.
 

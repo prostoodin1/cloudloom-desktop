@@ -39,6 +39,7 @@ pub fn run() {
             engine::move_items,
             engine::delete_item,
             engine::start_transfer,
+            engine::retry_transfer,
             engine::cancel_transfer,
             engine::local_is_directory,
             engine::open_service_help,

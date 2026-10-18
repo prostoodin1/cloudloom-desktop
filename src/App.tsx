@@ -209,6 +209,13 @@ export default function App() {
       setShowTransfers(true)
     } catch(e) { setError(String(e)) }
   }
+  const retryTask = async (task: Task) => {
+    try {
+      await call<string>('retry_transfer', { taskId: task.id })
+      setTasks(items => items.map(item => item.id === task.id ? { ...item, retryable: false } : item))
+      setShowTransfers(true)
+    } catch (e) { setError(String(e)) }
+  }
   const submitAction = async () => {
     if (!profile || !prompt) return
     setActionBusy(true); setError('')
@@ -252,7 +259,7 @@ export default function App() {
           </div> : <div className="empty"><div className="empty-icon"><Folder size={34}/></div><h3>{query ? 'Ничего не найдено' : 'Здесь пока пусто'}</h3><p>{query ? 'Попробуйте другой поисковый запрос.' : 'Загрузите файлы или перетащите сюда папку.'}</p>{!query && <button className="button subtle" onClick={() => void upload(false)}><Plus size={16}/>Добавить файлы</button>}</div>}
           <footer className="file-footer"><span>{visible.length} элементов{selected.size ? ` · Выбрано ${selected.size}` : ''}</span><span><Cloud size={13}/>Обновлено с сервиса</span></footer>
         </section>
-        {showTransfers && <section className="transfers"><header><span><ArrowUpToLine size={17}/>Передачи {activeTasks.length > 0 && <b>{activeTasks.length}</b>}</span><button aria-label="Скрыть передачи" onClick={() => setShowTransfers(false)}><X size={16}/></button></header>{tasks.length ? <div className="transfer-items">{tasks.map(task => <div className={`transfer ${task.status}`} key={task.id}><div className="transfer-direction">{task.direction === 'upload' ? <ArrowUpToLine size={18}/> : <ArrowDownToLine size={18}/>}</div><div className="transfer-info"><strong>{task.name}</strong><small>{statusText[task.status]}{task.total > 0 && ` · ${formatBytes(task.bytes)} / ${formatBytes(task.total)}`}{task.speed > 0 && ` · ${formatBytes(task.speed)}/с`}</small>{task.status === 'active' && <progress max={task.total || 1} value={task.bytes}/>} {task.error && <p>{task.error}</p>}</div>{['active','queued'].includes(task.status) ? <button title="Отменить передачу" onClick={() => void call('cancel_transfer',{id:task.id}).catch(e => setError(String(e)))}><X size={15}/></button> : task.status === 'complete' ? <Check size={17}/> : null}</div>)}</div> : <div className="no-transfers">Передач пока нет. Загружайте и скачивайте файлы или папки — прогресс появится здесь.</div>}</section>}
+        {showTransfers && <section className="transfers"><header><span><ArrowUpToLine size={17}/>Передачи {activeTasks.length > 0 && <b>{activeTasks.length}</b>}</span><button aria-label="Скрыть передачи" onClick={() => setShowTransfers(false)}><X size={16}/></button></header>{tasks.length ? <div className="transfer-items">{tasks.map(task => <div className={`transfer ${task.status}`} key={task.id}><div className="transfer-direction">{task.direction === 'upload' ? <ArrowUpToLine size={18}/> : <ArrowDownToLine size={18}/>}</div><div className="transfer-info"><strong>{task.name}</strong><small>{statusText[task.status]}{task.total > 0 && ` · ${formatBytes(task.bytes)} / ${formatBytes(task.total)}`}{task.speed > 0 && ` · ${formatBytes(task.speed)}/с`}</small>{task.status === 'active' && <progress max={task.total || 1} value={task.bytes}/>} {task.error && <p>{task.error}</p>}</div>{['active','queued'].includes(task.status) ? <button title="Отменить передачу" onClick={() => void call('cancel_transfer',{id:task.id}).catch(e => setError(String(e)))}><X size={15}/></button> : task.retryable ? <button title="Повторить передачу" aria-label={`Повторить ${task.name}`} onClick={() => void retryTask(task)}><RefreshCw size={15}/></button> : task.status === 'complete' ? <Check size={17}/> : null}</div>)}</div> : <div className="no-transfers">Передач пока нет. Загружайте и скачивайте файлы или папки — прогресс появится здесь.</div>}</section>}
       </main>
     </div>
 

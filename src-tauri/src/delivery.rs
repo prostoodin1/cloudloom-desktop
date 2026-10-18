@@ -14,6 +14,7 @@ use std::{
 use tokio::io::AsyncWriteExt;
 
 const MISSING: &str = "Файл, папка или бакет не найдены. Обновите список и проверьте путь.";
+const UPLOAD_ATTEMPTS: u32 = 5;
 fn valid_share_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
@@ -437,39 +438,59 @@ impl Client {
         if !overwrite {
             self.new_destination(&path).await?;
         }
-        let token = self.token().await?;
-        let file = tokio::fs::File::open(local)
+        let metadata = tokio::fs::metadata(local)
             .await
-            .map_err(|_| "Не удалось открыть исходный файл")?;
-        let length = file
-            .metadata()
-            .await
-            .map_err(|_| "Не удалось прочитать размер файла")?
-            .len();
-        if !file
-            .metadata()
-            .await
-            .map_err(|_| "Не удалось проверить исходный файл")?
-            .is_file()
-        {
+            .map_err(|_| "Не удалось прочитать исходный файл")?;
+        if !metadata.is_file() {
             return Err("Выберите обычный файл".into());
         }
-        let stream = tokio_util::io::ReaderStream::new(file).inspect_ok(move |chunk| {
-            progress.fetch_add(chunk.len() as u64, Ordering::Relaxed);
-        });
-        let response = self
-            .http
-            .post(self.endpoint("files/upload"))
-            .query(&[("path", &path)])
-            .bearer_auth(token)
-            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
-            .header(reqwest::header::CONTENT_LENGTH, length)
-            .body(reqwest::Body::wrap_stream(stream))
-            .send()
-            .await
-            .map_err(network_error)?;
-        checked(response).await?;
-        Ok(())
+        let length = metadata.len();
+        let progress_base = progress.load(Ordering::Relaxed);
+        let mut last_error = "Не удалось загрузить файл".to_string();
+        for attempt in 1..=UPLOAD_ATTEMPTS {
+            progress.store(progress_base, Ordering::Relaxed);
+            let file = tokio::fs::File::open(local)
+                .await
+                .map_err(|_| "Не удалось открыть исходный файл")?;
+            let stream = tokio_util::io::ReaderStream::new(file).inspect_ok({
+                let progress = progress.clone();
+                move |chunk| {
+                    progress.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+                }
+            });
+            let response = self
+                .http
+                .post(self.endpoint("files/upload"))
+                .query(&[("path", &path)])
+                .bearer_auth(self.token().await?)
+                .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+                .header(reqwest::header::CONTENT_LENGTH, length)
+                .body(reqwest::Body::wrap_stream(stream))
+                .send()
+                .await;
+            let retryable = match response {
+                Ok(response) if response.status().is_success() => return Ok(()),
+                Ok(response) if response.status() == StatusCode::UNAUTHORIZED => {
+                    last_error = status_error(response.status());
+                    let _ = self.login(None).await;
+                    true
+                }
+                Ok(response) => {
+                    let status = response.status();
+                    last_error = status_error(status);
+                    matches!(status.as_u16(), 408 | 425 | 429 | 500 | 502 | 503 | 504)
+                }
+                Err(error) => {
+                    last_error = network_error(error);
+                    true
+                }
+            };
+            if !retryable || attempt == UPLOAD_ATTEMPTS {
+                return Err(last_error);
+            }
+            tokio::time::sleep(Duration::from_secs(1u64 << (attempt - 1).min(3))).await;
+        }
+        Err(last_error)
     }
     pub async fn execute(&self, args: &[String]) -> Result<String, String> {
         let operation = args.first().map(String::as_str).unwrap_or("");
@@ -525,6 +546,7 @@ impl Client {
         upload: bool,
         directory: bool,
         progress: Arc<AtomicU64>,
+        resume: bool,
     ) -> Result<(), String> {
         let remote = api_path(remote)?;
         let mut queue = vec![(remote, local.to_path_buf(), directory)];
@@ -536,8 +558,17 @@ impl Client {
             }
             if directory {
                 if upload {
-                    self.new_destination(&remote).await?;
-                    self.mkdir(&remote).await?;
+                    if resume {
+                        match self.stat(&remote).await {
+                            Ok(value) if value["IsDir"] == true => {}
+                            Ok(_) => return Err("На месте папки уже находится файл".into()),
+                            Err(error) if error == MISSING => self.mkdir(&remote).await?,
+                            Err(error) => return Err(error),
+                        }
+                    } else {
+                        self.new_destination(&remote).await?;
+                        self.mkdir(&remote).await?;
+                    }
                     let mut entries = tokio::fs::read_dir(&local)
                         .await
                         .map_err(|_| "Не удалось прочитать локальную папку")?;
@@ -565,9 +596,11 @@ impl Client {
                         ));
                     }
                 } else {
-                    tokio::fs::create_dir(&local)
-                        .await
-                        .map_err(|_| "Не удалось создать папку без перезаписи")?;
+                    if !(resume && local.is_dir()) {
+                        tokio::fs::create_dir(&local)
+                            .await
+                            .map_err(|_| "Не удалось создать папку без перезаписи")?;
+                    }
                     for entry in self.list(&remote).await? {
                         let name = entry["Name"].as_str().ok_or("Некорректное имя файла")?;
                         crate::engine::safe_name(name)?;
@@ -580,12 +613,43 @@ impl Client {
                     }
                 }
             } else if upload {
-                self.upload(&remote, &local, false, progress.clone())
-                    .await?;
+                let size = tokio::fs::metadata(&local)
+                    .await
+                    .map_err(|_| "Не удалось прочитать исходный файл")?
+                    .len();
+                if resume {
+                    match self.stat(&remote).await {
+                        Ok(value) if value["IsDir"] == false && value["Size"].as_u64() == Some(size) => {
+                            progress.fetch_add(size, Ordering::Relaxed);
+                            continue;
+                        }
+                        Ok(value) if value["IsDir"] == true => {
+                            return Err("На месте файла уже находится папка".into());
+                        }
+                        Ok(_) => self.upload(&remote, &local, true, progress.clone()).await?,
+                        Err(error) if error == MISSING => {
+                            self.upload(&remote, &local, false, progress.clone()).await?
+                        }
+                        Err(error) => return Err(error),
+                    }
+                } else {
+                    self.upload(&remote, &local, false, progress.clone()).await?;
+                }
             } else {
                 let size = self.stat(&remote).await?["Size"]
                     .as_u64()
                     .ok_or("Неизвестный размер файла")?;
+                if resume && local.is_file() {
+                    let local_size = std::fs::metadata(&local)
+                        .map_err(|_| "Не удалось проверить локальный файл")?
+                        .len();
+                    if local_size == size {
+                        progress.fetch_add(size, Ordering::Relaxed);
+                        continue;
+                    }
+                    std::fs::remove_file(&local)
+                        .map_err(|_| "Не удалось заменить незавершённый локальный файл")?;
+                }
                 self.download(&remote, &local, size, progress.clone())
                     .await?;
             }

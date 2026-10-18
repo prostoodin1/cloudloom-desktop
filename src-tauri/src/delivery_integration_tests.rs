@@ -28,6 +28,7 @@ fn fixture() -> Server {
     let thread = std::thread::spawn(move || {
         let mut files: HashMap<String, Option<Vec<u8>>> = HashMap::from([("/".into(), None)]);
         let mut shares = HashMap::<String, Value>::new();
+        let mut retry_uploads = 0u32;
         while !stopped.load(Ordering::Relaxed) {
             let (stream, _) = match listener.accept() {
                 Ok(s) => s,
@@ -135,8 +136,13 @@ fn fixture() -> Server {
                         }
                     }
                     ("POST", "files/upload") => {
-                        files.insert(path.into(), Some(body));
-                        status = 201;
+                        if path == "/retry-once.txt" && retry_uploads == 0 {
+                            retry_uploads += 1;
+                            status = 503;
+                        } else {
+                            files.insert(path.into(), Some(body));
+                            status = 201;
+                        }
                     }
                     ("POST", "shares") => {
                         let value: Value = serde_json::from_slice(&body).unwrap();
@@ -233,6 +239,15 @@ async fn user_api_file_folder_preview_and_error_roundtrip() {
         client.stat("note.txt").await.unwrap()["Size"],
         std::fs::metadata(&source).unwrap().len()
     );
+    progress.store(0, Ordering::Relaxed);
+    client
+        .upload("retry-once.txt", &source, false, progress.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        client.stat("retry-once.txt").await.unwrap()["Size"],
+        std::fs::metadata(&source).unwrap().len()
+    );
     let downloaded = folder.join("downloaded.txt");
     let bytes = std::fs::read(&source).unwrap();
     let partial = client
@@ -298,16 +313,32 @@ async fn user_api_file_folder_preview_and_error_roundtrip() {
     std::fs::create_dir_all(local_dir.join("empty")).unwrap();
     std::fs::write(local_dir.join("file.txt"), b"nested").unwrap();
     client
-        .transfer("tree", &local_dir, true, true, progress.clone())
+        .transfer("tree", &local_dir, true, true, progress.clone(), false)
+        .await
+        .unwrap();
+    std::fs::write(local_dir.join("after-interruption.txt"), b"continued").unwrap();
+    progress.store(0, Ordering::Relaxed);
+    client
+        .transfer("tree", &local_dir, true, true, progress.clone(), true)
         .await
         .unwrap();
     let copy = folder.join("tree-copy");
     client
-        .transfer("tree", &copy, false, true, progress.clone())
+        .transfer("tree", &copy, false, true, progress.clone(), false)
         .await
         .unwrap();
     assert!(copy.join("empty").is_dir());
     assert_eq!(std::fs::read(copy.join("file.txt")).unwrap(), b"nested");
+    assert_eq!(
+        std::fs::read(copy.join("after-interruption.txt")).unwrap(),
+        b"continued"
+    );
+    progress.store(0, Ordering::Relaxed);
+    client
+        .transfer("tree", &copy, false, true, progress.clone(), true)
+        .await
+        .unwrap();
+    assert!(progress.load(Ordering::Relaxed) > 0);
     client.rename("tree", "renamed").await.unwrap();
     assert!(client.stat("tree").await.is_err());
     assert!(
