@@ -88,6 +88,8 @@ fn fixture() -> Server {
             } else if path == "/redirect" {
                 status = 302;
                 extra = "Location: http://127.0.0.1:9/do-not-send-credentials\r\n".into();
+            } else if path == "/slow" {
+                std::thread::sleep(Duration::from_millis(180));
             } else {
                 match (method, endpoint) {
                     ("GET", "dirs") => {
@@ -196,8 +198,12 @@ fn fixture() -> Server {
                 }
             }
             let stream = reader.get_mut();
-            write!(stream,"HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n{extra}\r\n",response.len()).unwrap();
-            stream.write_all(&response).unwrap();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n{extra}\r\n",
+                response.len()
+            );
+            let _ = stream.write_all(&response);
         }
     });
     Server {
@@ -205,6 +211,42 @@ fn fixture() -> Server {
         stop,
         thread: Some(thread),
     }
+}
+
+#[tokio::test]
+async fn upload_deadline_tracks_inactivity_instead_of_total_duration() {
+    let server = fixture();
+    let progress = Arc::new(AtomicU64::new(0));
+    let advancing = progress.clone();
+    let pump = tokio::spawn(async move {
+        for _ in 0..30 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            advancing.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+    let request = Http::new()
+        .post(format!("{}api/v2/user/files/upload?path=/slow", server.url))
+        .bearer_auth("fixture-token");
+    assert!(
+        upload_with_idle_timeout(request, progress, Duration::from_millis(100))
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
+    pump.abort();
+    let request = Http::new()
+        .post(format!("{}api/v2/user/files/upload?path=/slow", server.url))
+        .bearer_auth("fixture-token");
+    assert!(
+        upload_with_idle_timeout(
+            request,
+            Arc::new(AtomicU64::new(0)),
+            Duration::from_millis(60)
+        )
+        .await
+        .is_err()
+    );
 }
 
 #[tokio::test]
