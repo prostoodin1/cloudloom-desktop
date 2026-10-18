@@ -619,7 +619,9 @@ impl Client {
                     .len();
                 if resume {
                     match self.stat(&remote).await {
-                        Ok(value) if value["IsDir"] == false && value["Size"].as_u64() == Some(size) => {
+                        Ok(value)
+                            if value["IsDir"] == false && value["Size"].as_u64() == Some(size) =>
+                        {
                             progress.fetch_add(size, Ordering::Relaxed);
                             continue;
                         }
@@ -628,12 +630,14 @@ impl Client {
                         }
                         Ok(_) => self.upload(&remote, &local, true, progress.clone()).await?,
                         Err(error) if error == MISSING => {
-                            self.upload(&remote, &local, false, progress.clone()).await?
+                            self.upload(&remote, &local, false, progress.clone())
+                                .await?
                         }
                         Err(error) => return Err(error),
                     }
                 } else {
-                    self.upload(&remote, &local, false, progress.clone()).await?;
+                    self.upload(&remote, &local, false, progress.clone())
+                        .await?;
                 }
             } else {
                 let size = self.stat(&remote).await?["Size"]

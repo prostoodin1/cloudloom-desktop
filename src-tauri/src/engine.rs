@@ -1255,7 +1255,9 @@ async fn begin_transfer(
             );
         }
         if resume && local_path.exists() && local_path.is_dir() != directory {
-            return Err("Тип локального места назначения изменился после остановки передачи".into());
+            return Err(
+                "Тип локального места назначения изменился после остановки передачи".into(),
+            );
         }
         (remote(&profile, &path)?, local)
     };
@@ -1353,7 +1355,10 @@ async fn begin_transfer(
                     None => {
                         task.status = "cancelled".into();
                         task.retryable = true;
-                        task.error = Some("Передача отменена. Её можно безопасно повторить из списка передач.".into());
+                        task.error = Some(
+                            "Передача отменена. Её можно безопасно повторить из списка передач."
+                                .into(),
+                        );
                     }
                 }
                 engine.emit_task(&app, task.clone());
