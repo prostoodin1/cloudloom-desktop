@@ -361,6 +361,12 @@ impl Client {
         limit: u64,
         progress: Arc<AtomicU64>,
     ) -> Result<(), String> {
+        let expected = self.stat(path).await?["Size"]
+            .as_u64()
+            .ok_or("Неизвестный размер файла")?;
+        if expected > limit {
+            return Err("Файл превышает лимит загрузки".into());
+        }
         // Publish only completed bytes. A dropped/cancelled future can leave its
         // unique partial file, but never a truncated file at the final name.
         let temporary =
@@ -369,6 +375,15 @@ impl Client {
             .download_inner(path, &temporary, limit, progress, true)
             .await;
         if result.is_ok() {
+            if tokio::fs::metadata(&temporary)
+                .await
+                .map_err(|_| "Не удалось проверить скачанный файл")?
+                .len()
+                != expected
+            {
+                let _ = tokio::fs::remove_file(&temporary).await;
+                return Err("Delivery передал файл не полностью. Повторите передачу".into());
+            }
             // Unlike rename on Unix, hard_link fails if the destination exists.
             let published = tokio::fs::hard_link(&temporary, local).await.map_err(|_| {
                 "Не удалось сохранить файл без перезаписи. Проверьте место назначения".to_string()

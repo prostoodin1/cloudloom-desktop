@@ -246,6 +246,7 @@ async fn user_api_file_folder_preview_and_error_roundtrip() {
         std::fs::metadata(&source).unwrap().len()
     );
     progress.store(0, Ordering::Relaxed);
+    *client.token.lock().await = Some("expired-token".into());
     client
         .upload_inner("/retry-once.txt", &source, progress.clone())
         .await
