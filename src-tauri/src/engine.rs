@@ -207,6 +207,7 @@ impl Engine {
             }]),
             pending: tokio::sync::Mutex::new(HashMap::new()),
             tasks: Mutex::new(vec![]),
+            retries: Mutex::new(HashMap::new()),
             cancel: Mutex::new(HashMap::new()),
             slots: Arc::new(Semaphore::new(3)),
             moves: tokio::sync::Mutex::new(()),
