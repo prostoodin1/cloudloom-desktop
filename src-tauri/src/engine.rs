@@ -176,6 +176,29 @@ pub fn initialize(app: &AppHandle) -> Result<Engine, String> {
     })
 }
 impl Engine {
+    #[cfg(all(test, windows))]
+    pub(crate) fn test_mount(directory: PathBuf) -> Self {
+        Self {
+            binary: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(engine_resource_name()),
+            directory,
+            password: uuid::Uuid::new_v4().to_string(),
+            profiles: Mutex::new(vec![Profile {
+                id: "mount-test".into(),
+                name: "Mount test".into(),
+                provider: "alias".into(),
+                root: "".into(),
+                ready: true,
+                transport: "".into(),
+            }]),
+            pending: tokio::sync::Mutex::new(HashMap::new()),
+            tasks: Mutex::new(vec![]),
+            cancel: Mutex::new(HashMap::new()),
+            slots: Arc::new(Semaphore::new(3)),
+            moves: tokio::sync::Mutex::new(()),
+            delivery: Mutex::new(HashMap::new()),
+            previews: tokio::sync::Mutex::new(HashMap::new()),
+        }
+    }
     #[cfg(test)]
     pub(crate) fn test_delivery(client: Arc<crate::delivery::Client>, directory: PathBuf) -> Self {
         Self {
@@ -912,7 +935,15 @@ pub async fn cancel_connect(engine: State<'_, Engine>, id: String) -> Result<(),
     Ok(())
 }
 #[tauri::command]
-pub async fn disconnect_profile(engine: State<'_, Engine>, id: String) -> Result<(), String> {
+pub async fn disconnect_profile(
+    engine: State<'_, Engine>,
+    mounts: State<'_, crate::mounts::Mounts>,
+    id: String,
+) -> Result<(), String> {
+    let _mount_lifecycle = mounts.lifecycle.lock().await;
+    if mounts.has_profile(&id).await {
+        return Err("Сначала отключите диск Проводника этого профиля".into());
+    }
     let profile = engine.profile(&id)?;
     if engine
         .previews
@@ -937,6 +968,7 @@ pub async fn disconnect_profile(engine: State<'_, Engine>, id: String) -> Result
     } else {
         None
     };
+    mounts.forget(&engine, &id).await?;
     if profile.transport == "sftpgo-api" {
         match crate::delivery::vault(&id)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => {}

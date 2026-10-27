@@ -1,5 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core'
-export interface Profile { id: string; name: string; provider: string; root: string; ready: boolean }
+export interface Profile { id: string; name: string; provider: string; root: string; ready: boolean; transport?: string }
 export interface Entry { name: string; path: string; size: number; isDir: boolean; modified: string; mime: string }
 export interface StorageUsage { used: number | null; total: number | null; free: number | null; message: string | null }
 export interface PreviewData { token: string; kind: 'image' | 'video' | 'audio' | 'text'; localPath: string | null; streamUrl?: string | null; text: string | null }

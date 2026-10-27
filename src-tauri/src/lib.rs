@@ -1,5 +1,6 @@
 mod delivery;
 mod engine;
+mod mounts;
 mod preview;
 mod setup;
 mod sharing;
@@ -20,6 +21,21 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(updates::Startup::default())
+        .manage(mounts::Mounts::default())
+        .on_window_event(|window, event| {
+            use tauri::{Emitter, Manager};
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window
+                    .state::<mounts::Mounts>()
+                    .active
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    > 0
+                {
+                    api.prevent_close();
+                    let _ = window.emit("explorer-close-blocked", ());
+                }
+            }
+        })
         .setup(|app| {
             use tauri::Manager;
             let state = engine::initialize(app.handle()).map_err(std::io::Error::other)?;
@@ -50,6 +66,11 @@ pub fn run() {
             sharing::create_share,
             sharing::revoke_share,
             updates::startup_update,
+            mounts::explorer_disks,
+            mounts::connect_explorer,
+            mounts::disconnect_explorer,
+            mounts::open_explorer,
+            mounts::open_winfsp_help,
         ])
         .run(tauri::generate_context!())
         .expect("Cloudloom could not start");

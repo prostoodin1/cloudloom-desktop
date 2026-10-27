@@ -23,6 +23,8 @@ These initial Mac builds are **ad-hoc signed, not Apple Developer ID signed or n
 
 ## Features
 
+Unreleased Windows preview: optional Explorer drives with a chosen drive letter, local display name, bundled service badge, read-only/write mode and reconnect-on-Cloudloom-start. Requires WinFsp. Delivery user-API profiles and Finder mounting are not supported in this preview. [Setup, cache safety and verification](docs/EXPLORER.md). This feature is not yet in the stable download links above.
+
 - Signed automatic updates at startup, before opening the workspace. Offline/error fallback lets you continue with the installed version. **Older releases need one manual installation of Kestrel**; subsequent native releases can update automatically. Windows installation may require an OS prompt; macOS relaunches after installation. [Update behaviour and publishing](docs/UPDATES.md).
 
 - Per-item **… → Получить ссылку** when the connected backend advertises public-link support. A confirmation dialog is required; opening a preview never creates a public link. Delivery user-API profiles create read-only links for exactly one selected file/folder, with a 1–90 day expiry (7 days by default), optional password and immediate revocation in the result dialog. Server permissions/password policies still apply. Other providers create/retrieve their normal link; password, expiry and revocation are not promised where the adapter does not provide them. Existing Delivery WebDAV profiles do not gain user-API sharing automatically.
