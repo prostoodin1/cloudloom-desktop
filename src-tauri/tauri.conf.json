@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Cloudloom",
-  "version": "0.8.3",
+  "version": "0.9.0",
   "identifier": "studio.red.cloudloom",
   "build": {
     "frontendDist": "../dist",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Cloudloom Kestrel",
+        "title": "Cloudloom Linden",
         "width": 1440,
         "height": 900,
         "minWidth": 780,
