@@ -5,7 +5,7 @@ export interface StorageUsage { used: number | null; total: number | null; free:
 export interface PreviewData { token: string; kind: 'image' | 'video' | 'audio' | 'text'; localPath: string | null; streamUrl?: string | null; text: string | null }
 export interface ShareCapabilities { supported: boolean; delivery: boolean }
 export interface ShareData { url: string; id: string | null; expiresAt: number | null; canRevoke: boolean }
-export interface Task { id: string; profileId: string; name: string; direction: string; status: string; bytes: number; total: number; speed: number; error?: string }
+export interface Task { id: string; profileId: string; name: string; direction: string; status: string; bytes: number; total: number; speed: number; error?: string; retryable: boolean }
 export interface Question { name: string; help: string; default: unknown; password: boolean; exclusive: boolean; examples: { Value: string; Help: string }[] | null }
 export interface ConnectReply { profile?: Profile; id?: string; question?: Question; error?: string }
 export const desktop = isTauri()

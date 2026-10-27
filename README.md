@@ -38,7 +38,7 @@ Unreleased Windows preview: optional Explorer drives with a chosen drive letter,
 - Centered profile selector: saved profiles left, searchable services right, blurred background.
 - Small **Помощь** button after selecting a service: dedicated credential instructions without clearing the form.
 - Actual folder browsing, file/folder upload/download, rename, confirmed deletion, multi-select, list/grid views and drag/drop.
-- Bounded concurrent transfers, actual progress and cancellation. Interrupted transfers are labelled on restart; cross-restart resumption is not implemented.
+- Bounded concurrent transfers, actual progress and cancellation. Temporary network failures are retried automatically. Failed or cancelled transfers can be safely retried during the same app session; Delivery folder retries verify completed files and continue with missing data. Interrupted transfers are labelled on restart; cross-restart resumption is not implemented.
 - Configurations encrypted individually. The encryption password is held in **macOS Keychain**, or Windows Credential Manager on Windows. Tokens are not stored in browser localStorage.
 - 27 service entries with individual setup guides: Google Drive, OneDrive, Dropbox, Google Cloud Storage, Box, pCloud, Yandex Disk, WebDAV, S3-compatible storage, MEGA, Koofr, HiDrive, Backblaze B2, Azure Blob Storage, Storj, Seafile, SFTP, local folders, Delivery, Nextcloud, ownCloud, Proton Drive, OpenDrive, Jottacloud, PikPak, Wasabi and Cloudflare R2. Some are named presets for the same WebDAV/S3 adapter. Proton Drive's adapter is beta.
 

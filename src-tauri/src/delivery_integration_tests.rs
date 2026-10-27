@@ -28,6 +28,8 @@ fn fixture() -> Server {
     let thread = std::thread::spawn(move || {
         let mut files: HashMap<String, Option<Vec<u8>>> = HashMap::from([("/".into(), None)]);
         let mut shares = HashMap::<String, Value>::new();
+        let mut retry_uploads = 0u32;
+        let mut dropped_upload_response = false;
         while !stopped.load(Ordering::Relaxed) {
             let (stream, _) = match listener.accept() {
                 Ok(s) => s,
@@ -86,6 +88,8 @@ fn fixture() -> Server {
             } else if path == "/redirect" {
                 status = 302;
                 extra = "Location: http://127.0.0.1:9/do-not-send-credentials\r\n".into();
+            } else if path == "/slow" {
+                std::thread::sleep(Duration::from_millis(180));
             } else {
                 match (method, endpoint) {
                     ("GET", "dirs") => {
@@ -135,8 +139,18 @@ fn fixture() -> Server {
                         }
                     }
                     ("POST", "files/upload") => {
-                        files.insert(path.into(), Some(body));
-                        status = 201;
+                        if path == "/retry-once.txt" && retry_uploads == 0 {
+                            retry_uploads += 1;
+                            status = 503;
+                        } else {
+                            files.insert(path.into(), Some(body));
+                            status = 201;
+                            // Server saved bytes but the connection died before the ACK.
+                            if path.contains(".cloudloom-") && !dropped_upload_response {
+                                dropped_upload_response = true;
+                                continue;
+                            }
+                        }
                     }
                     ("POST", "shares") => {
                         let value: Value = serde_json::from_slice(&body).unwrap();
@@ -184,8 +198,12 @@ fn fixture() -> Server {
                 }
             }
             let stream = reader.get_mut();
-            write!(stream,"HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n{extra}\r\n",response.len()).unwrap();
-            stream.write_all(&response).unwrap();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n{extra}\r\n",
+                response.len()
+            );
+            let _ = stream.write_all(&response);
         }
     });
     Server {
@@ -193,6 +211,42 @@ fn fixture() -> Server {
         stop,
         thread: Some(thread),
     }
+}
+
+#[tokio::test]
+async fn upload_deadline_tracks_inactivity_instead_of_total_duration() {
+    let server = fixture();
+    let progress = Arc::new(AtomicU64::new(0));
+    let advancing = progress.clone();
+    let pump = tokio::spawn(async move {
+        for _ in 0..30 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            advancing.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+    let request = Http::new()
+        .post(format!("{}api/v2/user/files/upload?path=/slow", server.url))
+        .bearer_auth("fixture-token");
+    assert!(
+        upload_with_idle_timeout(request, progress, Duration::from_millis(100))
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
+    pump.abort();
+    let request = Http::new()
+        .post(format!("{}api/v2/user/files/upload?path=/slow", server.url))
+        .bearer_auth("fixture-token");
+    assert!(
+        upload_with_idle_timeout(
+            request,
+            Arc::new(AtomicU64::new(0)),
+            Duration::from_millis(60)
+        )
+        .await
+        .is_err()
+    );
 }
 
 #[tokio::test]
@@ -231,6 +285,16 @@ async fn user_api_file_folder_preview_and_error_roundtrip() {
     );
     assert_eq!(
         client.stat("note.txt").await.unwrap()["Size"],
+        std::fs::metadata(&source).unwrap().len()
+    );
+    progress.store(0, Ordering::Relaxed);
+    *client.token.lock().await = Some("expired-token".into());
+    client
+        .upload_inner("/retry-once.txt", &source, progress.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        client.stat("retry-once.txt").await.unwrap()["Size"],
         std::fs::metadata(&source).unwrap().len()
     );
     let downloaded = folder.join("downloaded.txt");
@@ -298,16 +362,50 @@ async fn user_api_file_folder_preview_and_error_roundtrip() {
     std::fs::create_dir_all(local_dir.join("empty")).unwrap();
     std::fs::write(local_dir.join("file.txt"), b"nested").unwrap();
     client
-        .transfer("tree", &local_dir, true, true, progress.clone())
+        .transfer("tree", &local_dir, true, true, progress.clone(), false)
+        .await
+        .unwrap();
+    std::fs::write(local_dir.join("after-interruption.txt"), b"continued").unwrap();
+    progress.store(0, Ordering::Relaxed);
+    client
+        .transfer("tree", &local_dir, true, true, progress.clone(), true)
         .await
         .unwrap();
     let copy = folder.join("tree-copy");
     client
-        .transfer("tree", &copy, false, true, progress.clone())
+        .transfer("tree", &copy, false, true, progress.clone(), false)
         .await
         .unwrap();
     assert!(copy.join("empty").is_dir());
     assert_eq!(std::fs::read(copy.join("file.txt")).unwrap(), b"nested");
+    assert_eq!(
+        std::fs::read(copy.join("after-interruption.txt")).unwrap(),
+        b"continued"
+    );
+    // A same-sized but different destination must not be silently accepted or overwritten.
+    std::fs::write(local_dir.join("file.txt"), b"CHANG!").unwrap();
+    assert!(
+        client
+            .transfer("tree", &local_dir, true, true, progress.clone(), true)
+            .await
+            .is_err()
+    );
+    std::fs::write(local_dir.join("file.txt"), b"nested").unwrap();
+    std::fs::write(copy.join("file.txt"), b"WRONG!").unwrap();
+    assert!(
+        client
+            .transfer("tree", &copy, false, true, progress.clone(), true)
+            .await
+            .is_err()
+    );
+    assert_eq!(std::fs::read(copy.join("file.txt")).unwrap(), b"WRONG!");
+    std::fs::write(copy.join("file.txt"), b"nested").unwrap();
+    progress.store(0, Ordering::Relaxed);
+    client
+        .transfer("tree", &copy, false, true, progress.clone(), true)
+        .await
+        .unwrap();
+    assert!(progress.load(Ordering::Relaxed) > 0);
     client.rename("tree", "renamed").await.unwrap();
     assert!(client.stat("tree").await.is_err());
     assert!(
@@ -423,6 +521,7 @@ async fn user_api_file_folder_preview_and_error_roundtrip() {
     }
     client.delete("renamed", true).await.unwrap();
     client.delete("note.txt", false).await.unwrap();
+    client.delete("retry-once.txt", false).await.unwrap();
     assert!(client.list("").await.unwrap().is_empty());
     // The test exclusively created this UUID directory; no user files are removed.
     std::fs::remove_dir_all(folder).unwrap();

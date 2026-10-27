@@ -37,6 +37,18 @@ pub struct Task {
     pub total: u64,
     pub speed: f64,
     pub error: Option<String>,
+    #[serde(default)]
+    pub retryable: bool,
+}
+
+#[derive(Clone)]
+struct TransferSpec {
+    profile_id: String,
+    direction: String,
+    path: String,
+    local: String,
+    directory: bool,
+    name: String,
 }
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,6 +79,7 @@ pub struct Engine {
     profiles: Mutex<Vec<Profile>>,
     pending: tokio::sync::Mutex<HashMap<String, Pending>>,
     tasks: Mutex<Vec<Task>>,
+    retries: Mutex<HashMap<String, TransferSpec>>,
     cancel: Mutex<HashMap<String, Arc<Notify>>>,
     slots: Arc<Semaphore>,
     moves: tokio::sync::Mutex<()>,
@@ -156,6 +169,7 @@ pub fn initialize(app: &AppHandle) -> Result<Engine, String> {
         .and_then(|data| serde_json::from_slice(&data).ok())
         .unwrap_or_default();
     for task in &mut tasks {
+        task.retryable = false;
         if matches!(task.status.as_str(), "active" | "queued") {
             task.status = "interrupted".into();
             task.error = Some("Передача прервана закрытием приложения. Запустите её повторно; уже совпадающие файлы будут пропущены.".into());
@@ -168,6 +182,7 @@ pub fn initialize(app: &AppHandle) -> Result<Engine, String> {
         profiles: Mutex::new(profiles),
         pending: tokio::sync::Mutex::new(HashMap::new()),
         tasks: Mutex::new(tasks),
+        retries: Mutex::new(HashMap::new()),
         cancel: Mutex::new(HashMap::new()),
         slots: Arc::new(Semaphore::new(3)),
         moves: tokio::sync::Mutex::new(()),
@@ -215,6 +230,7 @@ impl Engine {
             }]),
             pending: tokio::sync::Mutex::new(HashMap::new()),
             tasks: Mutex::new(vec![]),
+            retries: Mutex::new(HashMap::new()),
             cancel: Mutex::new(HashMap::new()),
             slots: Arc::new(Semaphore::new(3)),
             moves: tokio::sync::Mutex::new(()),
@@ -1180,6 +1196,67 @@ pub async fn start_transfer(
     directory: bool,
     name: String,
 ) -> Result<String, String> {
+    begin_transfer(
+        app,
+        &engine,
+        TransferSpec {
+            profile_id: id,
+            direction,
+            path,
+            local,
+            directory,
+            name,
+        },
+        false,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn retry_transfer(
+    app: AppHandle,
+    engine: State<'_, Engine>,
+    task_id: String,
+) -> Result<String, String> {
+    let spec = engine
+        .retries
+        .lock()
+        .map_err(err)?
+        .remove(&task_id)
+        .ok_or_else(|| {
+            "Эту передачу уже нельзя повторить автоматически. Выберите файл или папку заново."
+                .to_string()
+        })?;
+    if let Ok(tasks) = engine.tasks.lock()
+        && let Some(old) = tasks.iter().find(|task| task.id == task_id)
+        && matches!(old.status.as_str(), "active" | "queued")
+    {
+        engine.retries.lock().map_err(err)?.insert(task_id, spec);
+        return Err("Передача ещё выполняется".into());
+    }
+    match begin_transfer(app, &engine, spec.clone(), true).await {
+        Ok(id) => Ok(id),
+        Err(error) => {
+            engine.retries.lock().map_err(err)?.insert(task_id, spec);
+            Err(error)
+        }
+    }
+}
+
+async fn begin_transfer(
+    app: AppHandle,
+    engine: &Engine,
+    spec: TransferSpec,
+    resume: bool,
+) -> Result<String, String> {
+    let TransferSpec {
+        profile_id: id,
+        direction,
+        path,
+        local,
+        directory,
+        name,
+    } = spec.clone();
     let profile = engine.profile(&id)?;
     safe_path(&path)?;
     safe_name(&name)?;
@@ -1198,13 +1275,20 @@ pub async fn start_transfer(
             return Err("Тип исходного файла изменился".into());
         }
         let target = remote(&profile, &path)?;
-        engine.require_new_destination(&id, &target).await?;
+        if !resume {
+            engine.require_new_destination(&id, &target).await?;
+        }
         (canonical.to_string_lossy().into_owned(), target)
     } else {
-        if local_path.exists() {
+        if local_path.exists() && !resume {
             return Err(
                 "В месте назначения уже есть файл или папка. Выберите другой путь для скачивания."
                     .into(),
+            );
+        }
+        if resume && local_path.exists() && local_path.is_dir() != directory {
+            return Err(
+                "Тип локального места назначения изменился после остановки передачи".into(),
             );
         }
         (remote(&profile, &path)?, local)
@@ -1219,6 +1303,7 @@ pub async fn start_transfer(
         total: 0,
         speed: 0.0,
         error: None,
+        retryable: false,
     };
     let task_id = task.id.clone();
     let signal = Arc::new(Notify::new());
@@ -1227,6 +1312,11 @@ pub async fn start_transfer(
         .lock()
         .map_err(err)?
         .insert(task_id.clone(), signal.clone());
+    engine
+        .retries
+        .lock()
+        .map_err(err)?
+        .insert(task_id.clone(), spec);
     engine.emit_task(&app, task.clone());
     tauri::async_runtime::spawn(async move {
         let engine = app.state::<Engine>();
@@ -1234,6 +1324,7 @@ pub async fn start_transfer(
         let mut task = task;
         if permit.is_none() {
             task.status = "cancelled".into();
+            task.retryable = true;
             engine.emit_task(&app, task.clone());
             if let Ok(mut map) = engine.cancel.lock() {
                 map.remove(&task.id);
@@ -1256,6 +1347,7 @@ pub async fn start_transfer(
                     is_upload,
                     directory,
                     progress.clone(),
+                    resume,
                 ));
                 let mut tick = tokio::time::interval(Duration::from_secs(1));
                 let mut last_bytes = 0;
@@ -1280,16 +1372,25 @@ pub async fn start_transfer(
                     Some(Ok(())) => {
                         task.status = "complete".into();
                         task.total = task.bytes;
+                        task.retryable = false;
+                        if let Ok(mut retries) = engine.retries.lock() {
+                            retries.remove(&task.id);
+                        }
                     }
                     Some(Err(error)) => {
                         task.status = "error".into();
+                        task.retryable = true;
                         task.error = Some(format!(
-                            "{error} Частично переданные файлы могут остаться; проверьте место назначения."
+                            "{error} Нажмите «Повторить»: уже переданные файлы будут проверены, а незавершённые — отправлены заново."
                         ));
                     }
                     None => {
                         task.status = "cancelled".into();
-                        task.error = Some("Передача отменена. Частично переданные файлы могут остаться в месте назначения.".into());
+                        task.retryable = true;
+                        task.error = Some(
+                            "Передача отменена. Её можно безопасно повторить из списка передач."
+                                .into(),
+                        );
                     }
                 }
                 engine.emit_task(&app, task.clone());
@@ -1300,6 +1401,7 @@ pub async fn start_transfer(
             }
             Err(error) => {
                 task.status = "error".into();
+                task.retryable = true;
                 task.error = Some(error);
                 engine.emit_task(&app, task.clone());
                 if let Ok(mut map) = engine.cancel.lock() {
@@ -1309,11 +1411,10 @@ pub async fn start_transfer(
             }
             Ok(None) => {}
         }
-        let args = vec![
+        let mut args = vec![
             if directory { "copy" } else { "copyto" }.into(),
             source,
             target,
-            "--immutable".into(),
             "--create-empty-src-dirs".into(),
             "--use-json-log".into(),
             "--stats".into(),
@@ -1323,15 +1424,26 @@ pub async fn start_transfer(
             "--log-level".into(),
             "NOTICE".into(),
             "--retries".into(),
-            "3".into(),
+            "10".into(),
+            "--retries-sleep".into(),
+            "2s".into(),
             "--low-level-retries".into(),
-            "5".into(),
+            "20".into(),
+            "--contimeout".into(),
+            "30s".into(),
+            "--timeout".into(),
+            "5m".into(),
             "--transfers".into(),
             "2".into(),
         ];
+        if resume {
+            args.push("--checksum".into());
+        }
+        args.push("--immutable".into());
         match engine.command(&id).args(args).stdout(Stdio::null()).spawn() {
             Err(_) => {
                 task.status = "error".into();
+                task.retryable = true;
                 task.error = Some("Не удалось запустить передачу".into());
             }
             Ok(mut child) => {
@@ -1340,13 +1452,13 @@ pub async fn start_transfer(
                 let mut failure = String::new();
                 loop {
                     tokio::select! {
-                        _ = signal.notified() => { let _ = child.kill().await; task.status = "cancelled".into(); break; }
+                        _ = signal.notified() => { let _ = child.kill().await; task.status = "cancelled".into(); task.retryable = true; task.error = Some("Передача отменена. Её можно безопасно повторить из списка передач.".into()); break; }
                         line = lines.next_line() => match line {
                             Ok(Some(line)) => { if let Ok(log) = serde_json::from_str::<Value>(&line) {
                                 if let Some(stats) = log.get("stats") { task.bytes = stats["bytes"].as_u64().unwrap_or(task.bytes); task.total = stats["totalBytes"].as_u64().unwrap_or(task.total); task.speed = stats["speed"].as_f64().unwrap_or(0.0); engine.emit_task(&app, task.clone()); }
                                 if log["level"].as_str() == Some("error") { failure = log["msg"].as_str().unwrap_or("").into(); }
                             } },
-                            _ => { match child.wait().await { Ok(status) if status.success() => { task.status = "complete".into(); task.bytes = task.total; }, _ => { task.status = "error".into(); task.error = Some(classify_error(&failure)); } } break; }
+                            _ => { match child.wait().await { Ok(status) if status.success() => { task.status = "complete".into(); task.bytes = task.total; task.retryable = false; if let Ok(mut retries) = engine.retries.lock() { retries.remove(&task.id); } }, _ => { task.status = "error".into(); task.retryable = true; task.error = Some(format!("{} Нажмите «Повторить», чтобы продолжить передачу.", classify_error(&failure))); } } break; }
                         }
                     }
                 }
@@ -1565,6 +1677,7 @@ mod tests {
             profiles: Mutex::new(vec![]),
             pending: tokio::sync::Mutex::new(HashMap::new()),
             tasks: Mutex::new(vec![]),
+            retries: Mutex::new(HashMap::new()),
             cancel: Mutex::new(HashMap::new()),
             slots: Arc::new(Semaphore::new(3)),
             moves: tokio::sync::Mutex::new(()),
