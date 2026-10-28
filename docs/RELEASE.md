@@ -1,17 +1,21 @@
-# Cloudloom Linden — Windows and Mac
+# Cloudloom Maple — Windows and Mac
 
 ## Что нового
+
+- **Маленькая кнопка «В Проводник» рядом с каждым профилем** в меню и боковом списке. Открывает настройки именно выбранного профиля, без повторного поиска.
+- **WinFsp включён в Windows-пакеты.** Если драйвер ещё не установлен, нажмите «Установить WinFsp» внутри Cloudloom. Официальный MSI уже рядом с приложением: скачивать вручную не нужно. Проверяются SHA256 и цифровая подпись; исходный пакет WinFsp не изменён. Windows запросит разрешение администратора, установщик покажет лицензию и параметры. Никакой скрытой установки или принудительной перезагрузки. Уже установленный WinFsp автоматически не заменяется, удаление Cloudloom не удаляет общий драйвер.
+- **Cloudloom теперь под MIT**, по разрешению владельца. WinFsp сохраняет GPLv3 с FLOSS-исключением, rclone и остальные компоненты — собственные лицензии. WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos. [Исходники и лицензия WinFsp](https://github.com/winfsp/winfsp/tree/v2.1). Полный текст включён в `resources/winfsp/License.txt`; ссылки и уведомления доступны в приложении.
 
 - **Облака как диски в Проводнике Windows.** Кнопка «Диски в Проводнике» в главном меню и боковой панели: профиль, свободная буква D–Z, своё название и значок сервиса. Название локальное, облачный аккаунт не переименовывается. Для смены настроек отключите диск и подключите снова. Windows может кэшировать подпись до обновления окна Проводника.
 - **Режим только чтения по умолчанию.** Запись включается явно; копирование, папки, переименование и удаление действуют на облако в рамках прав аккаунта. Отдельного подтверждения Cloudloom для каждого удаления через Проводник нет.
 - **Подключение при запуске Cloudloom** по желанию. Это не служба Windows и не автозапуск приложения при входе в ОС. Диск работает, пока запущено приложение; обычное закрытие окна блокируется до отключения дисков. Ручное отключение выключает автоподключение.
 - **Кэш и контроль отправки.** Чтение по частям, запись через постоянный кэш; очередь, ошибки и dirty-метаданные открытых файлов блокируют отключение. Аварийное завершение родителя останавливает процесс диска через Windows Job Object; оставшиеся изменения сохраняются для повторного подключения того же профиля с записью. Это не атомарная блокировка внешних программ: закройте файлы и не начинайте новую запись во время отключения. Кэш не защищает от сбоя диска/питания и не является полной офлайн-копией.
 
-Для дисков нужен **WinFsp**, устанавливаемый отдельно с официального сайта; кнопка помощи есть в приложении. Драйвер не устанавливается скрыто; могут понадобиться права администратора. Сам Cloudloom запускайте обычным пользователем, как Проводник.
+Для дисков нужен **WinFsp**. В Maple официальный установщик входит в Windows-пакет и запускается по кнопке внутри приложения. Подтвердите его установку и при необходимости перезагрузите Windows. Сам Cloudloom запускайте обычным пользователем, как Проводник.
 
 Поддерживаются профили rclone: Google Drive, OneDrive, WebDAV, S3 и другие. **Delivery с входом через SFTPGo user API пока не поддерживается именно как диск.** Для отдельного WebDAV-профиля нужен настоящий адрес, полученный у администратора; адрес не угадывается. На Mac подключения в Finder пока нет.
 
-Кэш **не зашифрован Cloudloom** и содержит локальные данные файлов. Целевой максимум — 10 ГиБ, резерв — 1 ГиБ; открытые и неотправленные файлы могут превышать мягкий лимит. Не удаляйте кэш с неотправленными изменениями и не редактируйте один файл одновременно несколькими клиентами. [Подробная инструкция](https://github.com/prostoodin1/cloudloom-desktop/blob/cloudloom-linden/docs/EXPLORER.md).
+Кэш **не зашифрован Cloudloom** и содержит локальные данные файлов. Целевой максимум — 10 ГиБ, резерв — 1 ГиБ; открытые и неотправленные файлы могут превышать мягкий лимит. Не удаляйте кэш с неотправленными изменениями и не редактируйте один файл одновременно несколькими клиентами. [Подробная инструкция](https://github.com/prostoodin1/cloudloom-desktop/blob/cloudloom-maple/docs/EXPLORER.md).
 
 Локальный тест с настоящим WinFsp проверяет временный диск: чтение, запись, папки, переименование, удаление, режим чтения, значок через Windows Shell, смену имени, блокировку отключения с dirty-записью, авторизацию локального API, остановку процесса и автоподключение после перезапуска. Рабочие облака студии не используются; это не сертификация каждого сервиса и сторонней программы.
 
@@ -27,10 +31,10 @@
 
 ## Downloads
 
-- **Cloudloom_Linden_Windows_x64_Setup.exe** — Windows 10/11 x64, рекомендован для автообновлений.
-- **Cloudloom_Linden_Windows_x64_Portable.zip** — распаковать целиком; рядом с cloudloom.exe должна оставаться папка resources. Требует WebView2. Дальнейшее обновление выполняется установщиком, не portable-патчером.
-- **Cloudloom_Linden_macOS_Intel.dmg** — Intel, macOS 13+.
-- **Cloudloom_Linden_macOS_AppleSilicon.dmg** — M-чипы, macOS 13+.
+- **Cloudloom_Maple_Windows_x64_Setup.exe** — Windows 10/11 x64, рекомендован для автообновлений.
+- **Cloudloom_Maple_Windows_x64_Portable.zip** — распаковать целиком; рядом с cloudloom.exe должна оставаться папка resources. Требует WebView2. Дальнейшее обновление выполняется установщиком, не portable-патчером.
+- **Cloudloom_Maple_macOS_Intel.dmg** — Intel, macOS 13+.
+- **Cloudloom_Maple_macOS_AppleSilicon.dmg** — M-чипы, macOS 13+.
 - Mac ZIP, подписанные updater-пакеты, подписи, SHA256 и latest.json также доступны. На Mac скопируйте приложение в Applications, не запускайте для обновления внутри read-only DMG.
 
 ## Verification and limits
@@ -43,4 +47,4 @@ Images retain temporary previews up to 1 GiB; UTF-8 text editing is limited to 2
 
 **Updater signatures are not publisher certificates.** Windows is not Authenticode signed; Mac is ad-hoc signed, not Developer ID signed or notarized. SmartScreen/Gatekeeper can warn or block. Do not disable OS security.
 
-The organization publication is a clean snapshot without old commits/releases. The personal upstream retains its existing history; this release does not rewrite it. Neither publication includes local profiles, credentials, private signing keys or working studio data. Application licensing remains all rights reserved; third-party licenses remain unchanged.
+The organization publication retains its clean source lineage without private personal history. The personal upstream retains its existing history; this release does not rewrite it. Neither publication includes local profiles, credentials, private signing keys or working studio data. Cloudloom is MIT licensed; third-party licenses remain unchanged. See LICENSE and docs/THIRD-PARTY-NOTICES.md.

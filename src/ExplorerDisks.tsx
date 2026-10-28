@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react'
 import { ExternalLink, HardDrive, LoaderCircle, RefreshCw, Unplug, X } from 'lucide-react'
 import { call, desktop, service, type Profile } from './api'
 import './explorer-disks.css'
@@ -9,16 +9,22 @@ interface Overview { windows: boolean; winFsp: boolean; letters: string[]; disks
 function defaults(profile: Profile, overview: Overview): DiskOptions {
   return overview.disks.find(d => d.options.id === profile.id)?.options ?? { id: profile.id, letter: overview.letters[0] ?? '', name: `${service(profile.provider).name} — ${profile.name}`.slice(0, 32).trim(), readOnly: true, autoMount: false, serviceIcon: true }
 }
-export function ExplorerDisks({ profiles, open, onClose }: { profiles: Profile[]; open: boolean; onClose: () => void }) {
+export interface ExplorerDisksHandle { selectProfile: (id: string) => void }
+export function ExplorerDisks({ profiles, open, onClose, ref }: { profiles: Profile[]; open: boolean; onClose: () => void; ref?: Ref<ExplorerDisksHandle> }) {
   const [overview, setOverview] = useState<Overview | null>(null)
   const [draft, setForm] = useState<DiskOptions | null>(null)
+  const [targetId, setTargetId] = useState<string | null>(null)
+  useImperativeHandle(ref, () => ({ selectProfile: id => { setTargetId(id); setForm(null) } }), [])
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [installation, setInstallation] = useState('')
+  const [restartRequired, setRestartRequired] = useState(false)
   const lock = useRef(false)
   const polling = useRef(false)
   const dialog = useRef<HTMLDivElement>(null)
   const closeRef = useRef(onClose)
-  const form = draft && profiles.some(p => p.id === draft.id) ? draft : profiles[0] && overview ? defaults(profiles[0], overview) : null
+  const target = profiles.find(p => p.id === targetId) ?? profiles[0]
+  const form = draft && profiles.some(p => p.id === draft.id) ? draft : target && overview ? defaults(target, overview) : null
   useEffect(() => { closeRef.current = onClose }, [onClose])
   const refresh = useCallback(async () => {
     if (!desktop || polling.current) return
@@ -69,12 +75,24 @@ export function ExplorerDisks({ profiles, open, onClose }: { profiles: Profile[]
     catch (e) { setError(String(e)) }
     finally { await refresh(); lock.current = false; setBusy(false) }
   }
+  const install = async () => {
+    if (lock.current || !window.confirm('Установить WinFsp из пакета Cloudloom? Откроется официальный установщик драйвера. Windows запросит права администратора; подтвердите установку и лицензию в его окне.')) return
+    lock.current = true; setBusy(true); setError(''); setInstallation('Завершите установку WinFsp в окне Windows…')
+    try {
+      const result = await call<string>('install_winfsp')
+      setRestartRequired(result === 'restartRequired')
+      setInstallation(result === 'restartRequired' ? 'WinFsp установлен. Перед подключением диска перезагрузите Windows.' : 'WinFsp установлен. Теперь можно подключить диск.')
+    } catch (e) { setInstallation(''); setError(String(e)) }
+    finally { await refresh(); lock.current = false; setBusy(false) }
+  }
   return <div className="modal-backdrop"><div ref={dialog} className="explorer-dialog" role="dialog" aria-modal="true" aria-labelledby="explorer-title" tabIndex={-1}>
     <header><div><p className="eyebrow">ВАШИ ОБЛАКА В WINDOWS</p><h2 id="explorer-title"><HardDrive size={23}/>Диски в Проводнике</h2></div><button className="round" aria-label="Закрыть диски" disabled={busy} onClick={onClose}><X size={18}/></button></header>
     <p className="explorer-intro">Облако появится как отдельный диск. Название и значок меняются только на этом компьютере, не в облачном аккаунте.</p>
+    <p className="explorer-credits">Cloudloom · MIT. WinFsp - Windows File System Proxy, Copyright (C) Bill Zissimopoulos. WinFsp распространяется под GPLv3 с FLOSS-исключением. <button type="button" onClick={() => { void call('open_winfsp_help').catch(e => setError(String(e))) }}>github.com/winfsp/winfsp — исходники и лицензия</button></p>
     {!desktop && <p className="error">Откройте настольное приложение Cloudloom.</p>}
     {overview && !overview.windows && <p className="error">Эта возможность пока доступна только в Windows. Обычная работа с облаками на Mac не меняется.</p>}
-    {overview?.windows && !overview.winFsp && <div className="explorer-notice"><strong>Нужен WinFsp</strong><p>Это драйвер виртуальных дисков. Установите его с официального сайта и перезапустите Cloudloom. Установка отдельная, Windows может запросить права администратора.</p><button className="button subtle" onClick={() => { void call('open_winfsp_help').catch(e => setError(String(e))) }}><ExternalLink size={15}/>Официальный сайт WinFsp</button></div>}
+    {overview?.windows && !overview.winFsp && <div className="explorer-notice"><strong>Нужен WinFsp</strong><p>Официальный установщик уже включён в Cloudloom — скачивать отдельно не нужно. Установка начнётся только после подтверждения; Windows запросит права администратора. Возможна перезагрузка Windows.</p><button className="button primary" disabled={busy} onClick={() => { void install() }}>{busy ? <LoaderCircle className="spin" size={15}/> : <HardDrive size={15}/>}Установить WinFsp</button></div>}
+    {installation && <p role="status" className="explorer-notice">{installation}</p>}
     {!overview && !error && <p role="status"><LoaderCircle className="spin" size={17}/>Проверяем диски…</p>}
     {!profiles.length && <p>Сначала подключите профиль облака или локальной папки в главном меню.</p>}
     {profile && form && overview && <>
@@ -86,7 +104,7 @@ export function ExplorerDisks({ profiles, open, onClose }: { profiles: Profile[]
       <p className="explorer-cache">Диск работает, пока открыт Cloudloom. Кэш хранится локально без дополнительного шифрования: чтение по частям, запись через кэш. Целевой размер — 10 ГБ, резерв — 1 ГБ; открытые и неотправленные файлы могут превысить лимит. Это не полностью офлайн-копия и не защита от конфликтов между программами.</p>
       {disk?.mounted && <div className="disk-state" role="status"><strong>{disk.options.letter}: · {disk.options.name}</strong><span>Подключён · очередь/ошибки: {disk.pending ?? 'неизвестно'}</span><small>Чтобы переименовать, сменить букву или режим, отключите диск и подключите с новыми настройками.</small></div>}
       {disk?.error && <p className="error" role="alert">{disk.error}</p>}
-      <footer>{mounted ? <><button className="button primary" disabled={busy} onClick={() => { void action('open_explorer') }}><ExternalLink size={16}/>Открыть Проводник</button><button className="button subtle" disabled={busy} onClick={() => { void action('disconnect_explorer') }}><Unplug size={16}/>Отключить диск</button></> : <button className="button primary" disabled={busy || !overview.windows || !overview.winFsp || unsupported || !form.letter || !form.name.trim()} onClick={() => { void action('connect_explorer') }}>{busy ? <LoaderCircle className="spin" size={16}/> : <HardDrive size={16}/>}Подключить диск</button>}<button className="button subtle" aria-label="Обновить диски" disabled={busy} onClick={() => { void refresh() }}><RefreshCw size={16}/></button></footer>
+      <footer>{mounted ? <><button className="button primary" disabled={busy} onClick={() => { void action('open_explorer') }}><ExternalLink size={16}/>Открыть Проводник</button><button className="button subtle" disabled={busy} onClick={() => { void action('disconnect_explorer') }}><Unplug size={16}/>Отключить диск</button></> : <button className="button primary" disabled={busy || !overview.windows || !overview.winFsp || restartRequired || unsupported || !form.letter || !form.name.trim()} onClick={() => { void action('connect_explorer') }}>{busy ? <LoaderCircle className="spin" size={16}/> : <HardDrive size={16}/>}Подключить диск</button>}<button className="button subtle" aria-label="Обновить диски" disabled={busy} onClick={() => { void refresh() }}><RefreshCw size={16}/></button></footer>
     </>}
     {error && <p className="error" role="alert">{error}</p>}
   </div></div>

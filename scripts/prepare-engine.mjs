@@ -6,7 +6,11 @@ import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
+const licenseFolder = join(root, 'src-tauri/resources')
+mkdirSync(licenseFolder, { recursive: true })
+copyFileSync(join(root, 'LICENSE'), join(licenseFolder, 'CLOUDLOOM-LICENSE.txt'))
 if (process.platform === 'win32') {
+  await import('./prepare-winfsp.mjs')
   const result = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(root, 'scripts/prepare-engine.ps1')], { stdio: 'inherit' })
   if (result.error) throw result.error
   process.exit(result.status ?? 1)

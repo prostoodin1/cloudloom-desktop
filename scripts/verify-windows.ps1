@@ -12,9 +12,10 @@ $installer = Start-Process -FilePath $InstallerPath -ArgumentList @('/S', "/D=$t
 if ($installer.ExitCode -ne 0) { throw "Installer failed: $($installer.ExitCode)" }
 $executable = Join-Path $testDirectory 'cloudloom.exe'
 $engine = Join-Path $testDirectory 'resources/rclone.exe'
-foreach ($path in @($executable, $engine, (Join-Path $testDirectory 'resources/RCLONE-LICENSE.txt'))) {
+foreach ($path in @($executable, $engine, (Join-Path $testDirectory 'resources/RCLONE-LICENSE.txt'), (Join-Path $testDirectory 'resources/CLOUDLOOM-LICENSE.txt'), (Join-Path $testDirectory 'resources/winfsp/License.txt'), (Join-Path $testDirectory 'resources/winfsp/winfsp-2.1.25156.msi'))) {
     if (!(Test-Path -LiteralPath $path)) { throw "Missing installed resource: $path" }
 }
+if ((Get-FileHash -LiteralPath (Join-Path $testDirectory 'resources/winfsp/winfsp-2.1.25156.msi') -Algorithm SHA256).Hash.ToLowerInvariant() -ne '073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a') { throw 'Wrong packaged WinFsp installer' }
 $version = & $engine version
 if ($LASTEXITCODE -ne 0 -or $version[0] -ne 'rclone v1.75.2' -or $version -notcontains '- os/arch: amd64') { throw 'Wrong bundled Windows engine' }
 $app = Start-Process -FilePath $executable -WindowStyle Hidden -PassThru

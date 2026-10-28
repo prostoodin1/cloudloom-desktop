@@ -1,7 +1,7 @@
 {
   "bundle": {
     "targets": ["app", "dmg"],
-    "resources": ["resources/rclone", "resources/RCLONE-LICENSE.txt"],
+    "resources": ["resources/rclone", "resources/RCLONE-LICENSE.txt", "resources/CLOUDLOOM-LICENSE.txt"],
     "macOS": {
       "minimumSystemVersion": "13.0",
       "signingIdentity": "-"

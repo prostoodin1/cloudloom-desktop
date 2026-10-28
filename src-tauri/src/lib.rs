@@ -6,6 +6,7 @@ mod setup;
 mod sharing;
 mod streaming;
 mod updates;
+mod winfsp;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -22,9 +23,19 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(updates::Startup::default())
         .manage(mounts::Mounts::default())
+        .manage(winfsp::Installer::default())
         .on_window_event(|window, event| {
             use tauri::{Emitter, Manager};
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window
+                    .state::<winfsp::Installer>()
+                    .busy
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    api.prevent_close();
+                    let _ = window.emit("winfsp-installing", ());
+                    return;
+                }
                 if window
                     .state::<mounts::Mounts>()
                     .active
@@ -72,6 +83,7 @@ pub fn run() {
             mounts::disconnect_explorer,
             mounts::open_explorer,
             mounts::open_winfsp_help,
+            winfsp::install_winfsp,
         ])
         .run(tauri::generate_context!())
         .expect("Cloudloom could not start");

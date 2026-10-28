@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Cloudloom",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "identifier": "studio.red.cloudloom",
   "build": {
     "frontendDist": "../dist",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Cloudloom Linden",
+        "title": "Cloudloom Maple",
         "width": 1440,
         "height": 900,
         "minWidth": 780,
@@ -30,7 +30,7 @@
     "createUpdaterArtifacts": true,
     "active": true,
     "targets": "all",
-    "resources": ["resources/rclone.exe", "resources/RCLONE-LICENSE.txt"],
+    "resources": ["resources/rclone.exe", "resources/RCLONE-LICENSE.txt", "resources/CLOUDLOOM-LICENSE.txt", "resources/winfsp/"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

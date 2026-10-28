@@ -10,6 +10,10 @@ use std::{
 };
 use tauri::State;
 use tokio::process::Child;
+#[cfg(windows)]
+pub(crate) fn winfsp_installed() -> bool {
+    platform::installed()
+}
 #[path = "mount_icons.rs"]
 mod icons;
 #[cfg(all(test, windows))]
@@ -659,7 +663,10 @@ pub(crate) fn open_winfsp_help() -> Result<(), String> {
         use std::os::windows::process::CommandExt;
         std::process::Command::new("rundll32.exe")
             .creation_flags(0x08000000)
-            .args(["url.dll,FileProtocolHandler", "https://winfsp.dev/rel/"])
+            .args([
+                "url.dll,FileProtocolHandler",
+                "https://github.com/winfsp/winfsp",
+            ])
             .spawn()
             .map_err(|_| "Откройте https://winfsp.dev/rel/ в браузере")?;
     }

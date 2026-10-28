@@ -6,7 +6,7 @@ import { ArrowDownToLine, ArrowLeft, ArrowUpToLine, Check, ChevronRight, CircleH
 import { call, desktop, providers, service, type ConnectReply, type Entry, type Profile, type Task, type StorageUsage } from './api'
 import { FilePreview } from './FilePreview'
 import { ShareDialog } from './ShareDialog'
-import { ExplorerDisks } from './ExplorerDisks'
+import { ExplorerDisks, type ExplorerDisksHandle } from './ExplorerDisks'
 import type { ShareCapabilities } from './api'
 import { useLiveUI } from './live-ui'
 import { useChoiceActivation, useFileInteractions } from './useFileInteractions'
@@ -35,6 +35,8 @@ export default function App() {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [choose, setChoose] = useState(true)
   const [explorer, setExplorer] = useState(false)
+  const explorerPanel = useRef<ExplorerDisksHandle>(null)
+  const mountProfile = (id: string) => { explorerPanel.current?.selectProfile(id); setExplorer(true) }
   const [theme, setTheme] = useState(() => localStorage.getItem('cloudloom-theme') ?? 'dark')
   const [view, setView] = useState(() => localStorage.getItem('cloudloom-view') ?? 'list')
   const [path, setPath] = useState('')
@@ -110,7 +112,8 @@ export default function App() {
   useEffect(() => {
     if (!desktop) return
     const unlisten = listen('explorer-close-blocked', () => { setExplorer(true); setToast('Сначала отключите диски Проводника. Cloudloom продолжает отправлять ваши изменения.') })
-    return () => { void unlisten.then(fn => fn()) }
+    const installing = listen('winfsp-installing', () => { setExplorer(true); setToast('Завершите установку WinFsp в окне Windows, прежде чем закрывать Cloudloom.') })
+    return () => { void unlisten.then(fn => fn()); void installing.then(fn => fn()) }
   }, [])
   useEffect(() => {
     if (!desktop) return
@@ -243,7 +246,7 @@ export default function App() {
         <button className="nav active" onClick={() => setShowTransfers(false)}><HardDrive size={18}/>Мои файлы</button>
         <button className="nav" onClick={() => setShowTransfers(v => !v)}><ArrowUpToLine size={18}/>Передачи{activeTasks.length > 0 && <span className="count">{activeTasks.length}</span>}</button>
         <p className="section-label profile-label">МОИ ПРОФИЛИ</p>
-        {profiles.map(p => <button key={p.id} className={`profile-nav ${profile?.id === p.id ? 'selected' : ''}`} {...choiceProps(`profile:${p.id}`)} onDoubleClick={() => enter(p)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); enter(p) } }}><ServiceIcon id={p.provider}/><span><strong>{p.name}</strong><small>{service(p.provider).name}</small><StorageMeter usage={usage[p.id]}/></span><i/></button>)}
+        {profiles.map(p => <div key={p.id} className="profile-nav-row"><button className={`profile-nav ${profile?.id === p.id ? 'selected' : ''}`} {...choiceProps(`profile:${p.id}`)} onDoubleClick={() => enter(p)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); enter(p) } }}><ServiceIcon id={p.provider}/><span><strong>{p.name}</strong><small>{service(p.provider).name}</small><StorageMeter usage={usage[p.id]}/></span><i/></button><button className="profile-mount" title="Добавить в Проводник" aria-label={`В Проводник: ${p.name}`} onClick={() => mountProfile(p.id)}><HardDrive size={15}/></button></div>)}
         <button className="add-profile" onClick={() => setChoose(true)}><Plus size={16}/>Добавить профиль</button>
         <button className="add-profile" onClick={() => setExplorer(true)}><HardDrive size={16}/>Диски в Проводнике</button>
         <div className="sidebar-bottom"><div className="privacy"><Cloud size={17}/><span>Ваши файлы — в вашем облаке.<br/>Прямое соединение с хранилищем.</span></div><button className="theme-button" onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={17}/> : <Moon size={17}/>}<span>{theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'}</span><small>{releaseName}</small></button></div>
@@ -273,7 +276,7 @@ export default function App() {
 
     {choose && <div className="profile-overlay" inert={explorer || undefined} aria-hidden={explorer || undefined}><div className="ambient ambient-one"/><div className="ambient ambient-two"/><div className="selector-top"><Brand/><button className="round" aria-label="Переключить тему" onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={18}/> : <Moon size={18}/>}</button></div><div className="welcome-title"><span className="welcome-tag"><i/>{liveUI.ui.tagline}</span><h1>{liveUI.ui.welcomeTitle}<br/><em>{liveUI.ui.welcomeEmphasis}</em></h1><p>{liveUI.ui.subtitle}</p><button className="button subtle explorer-entry" onClick={() => setExplorer(true)}><HardDrive size={16}/>Диски в Проводнике</button></div>
       <div className="profile-picker" role="dialog" aria-label="Выбор профиля">
-        <section className="saved-profiles"><div className="picker-heading"><Users size={17}/><h2>Мои профили</h2><span>{profiles.length}</span></div><p className="picker-description">Продолжите с нужным аккаунтом</p><div className="profile-cards">{profiles.length ? profiles.map(p => <div className="saved-profile" key={p.id}><button className="profile-open" {...choiceProps(`profile:${p.id}`)} onDoubleClick={() => enter(p)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); enter(p) } }}><ServiceIcon id={p.provider}/><span><strong>{p.name}</strong><small>{service(p.provider).name}{p.root ? ` · ${p.root}` : ''}</small></span><ChevronRight size={17}/></button><button className="disconnect" title="Отключить профиль" aria-label={`Отключить ${p.name}`} onClick={() => void disconnect(p)}><LogOut size={13}/></button></div>) : <div className="no-profiles"><div><Cloudy size={31}/></div><h3>Здесь будут ваши профили</h3><p>Подключите сервис справа.<br/>В следующий раз аккаунт будет ждать вас здесь.</p></div>}</div><button className="new-profile" onClick={() => { setServiceQuery(''); document.getElementById('service-search')?.focus() }}><Plus size={19}/><span>Добавить профиль</span></button><div className="picker-security"><span className="lock-dot"/>OAuth-вход или ключи вашего сервиса.<br/>Учётные данные зашифрованы на компьютере.</div></section>
+        <section className="saved-profiles"><div className="picker-heading"><Users size={17}/><h2>Мои профили</h2><span>{profiles.length}</span></div><p className="picker-description">Продолжите с нужным аккаунтом</p><div className="profile-cards">{profiles.length ? profiles.map(p => <div className="saved-profile" key={p.id}><button className="profile-open" {...choiceProps(`profile:${p.id}`)} onDoubleClick={() => enter(p)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); enter(p) } }}><ServiceIcon id={p.provider}/><span><strong>{p.name}</strong><small>{service(p.provider).name}{p.root ? ` · ${p.root}` : ''}</small></span><ChevronRight size={17}/></button><button className="profile-mount" title="Добавить в Проводник" aria-label={`В Проводник: ${p.name}`} onClick={() => mountProfile(p.id)}><HardDrive size={15}/></button><button className="disconnect" title="Отключить профиль" aria-label={`Отключить ${p.name}`} onClick={() => void disconnect(p)}><LogOut size={13}/></button></div>) : <div className="no-profiles"><div><Cloudy size={31}/></div><h3>Здесь будут ваши профили</h3><p>Подключите сервис справа.<br/>В следующий раз аккаунт будет ждать вас здесь.</p></div>}</div><button className="new-profile" onClick={() => { setServiceQuery(''); document.getElementById('service-search')?.focus() }}><Plus size={19}/><span>Добавить профиль</span></button><div className="picker-security"><span className="lock-dot"/>OAuth-вход или ключи вашего сервиса.<br/>Учётные данные зашифрованы на компьютере.</div></section>
         <section className="available-services" id="services"><div className="picker-heading"><Cloud size={17}/><h2>Подключить хранилище</h2><span>{providers.length}</span></div><label className="service-search"><Search size={14}/><input id="service-search" aria-label="Найти сервис" placeholder="Найти сервис…" value={serviceQuery} onChange={e => setServiceQuery(e.target.value)}/>{serviceQuery && <button aria-label="Сбросить поиск сервисов" onClick={() => setServiceQuery('')}><X size={13}/></button>}</label><div className="services">{providers.filter(p => `${p.name} ${p.description}`.toLocaleLowerCase().includes(serviceQuery.toLocaleLowerCase().trim())).map(p => <button className="service-option" key={p.id} {...choiceProps(`service:${p.id}`)} onDoubleClick={() => selectService(p.id)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); selectService(p.id) } }}><ServiceIcon id={p.id}/><span><strong>{p.name}</strong><small>{p.description}</small></span><Plus size={17}/></button>)}{!providers.some(p => `${p.name} ${p.description}`.toLocaleLowerCase().includes(serviceQuery.toLocaleLowerCase().trim())) && <p className="service-empty" role="status">Сервис не найден. Попробуйте другое название.</p>}</div></section>
       </div><div className="welcome-footer"><span>Cloudloom {releaseName}</span><button className="live-ui-check" onClick={() => void liveUI.check()} disabled={liveUI.checking} title={`${liveUI.status} · каталог ${liveUI.revision}`}><RefreshCw size={11} className={liveUI.checking ? 'spin' : ''}/>{liveUI.checking ? 'Проверяем интерфейс…' : 'Проверить интерфейс'}</button><span>Файлы не проходят через наши серверы</span></div>{!desktop && <div className="browser-note">Предпросмотр интерфейса. Для входа и работы с файлами запустите приложение для macOS или Windows.</div>}{error && <div className="selector-error error">{error}<button onClick={() => setError('')}><X size={15}/></button></div>}
     </div>}
@@ -304,7 +307,7 @@ export default function App() {
     {drag && <div className="drag-ghost" style={{ left: Math.min(drag.x + 16, window.innerWidth - 260), top: Math.min(drag.y + 16, window.innerHeight - 90) }}>Переместить: {drag.sources.length}<small>{drag.destination !== null ? `В папку: ${drag.destination || 'Корень'}` : 'Наведите на папку или путь сверху · Esc — отмена'}</small></div>}
     {preview && <FilePreview profileId={preview.profileId} remotePath={preview.remotePath} entry={preview.entry} onClose={() => setPreview(null)} onSaved={() => { void reload(); setProfiles(items => [...items]) }} onDownload={() => void download([preview.entry])}/>}
     {share && <ShareDialog profileId={share.profileId} path={share.path} entry={share.entry} capabilities={share.capabilities} onClose={() => setShare(null)}/>}
-    <ExplorerDisks profiles={profiles} open={explorer} onClose={() => setExplorer(false)}/>
+    <ExplorerDisks ref={explorerPanel} profiles={profiles} open={explorer} onClose={() => setExplorer(false)}/>
     {toast && <div className="toast" role="status"><Check size={16}/>{toast}</div>}
   </div>
 }
