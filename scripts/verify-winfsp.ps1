@@ -15,4 +15,6 @@ if (!$installed) {
 $env:CLOUDLOOM_TEST_MOUNTS='1'
 cargo test --locked --manifest-path src-tauri/Cargo.toml --lib real_windows_mount_read_write_readonly_and_appearance -- --nocapture
 if ($LASTEXITCODE) { throw 'Actual WinFsp filesystem test failed' }
-Write-Output 'Bundled WinFsp verified: signed installer, native mount, IO, read-only mode, icon, restart recovery.'
+cargo test --locked --manifest-path src-tauri/Cargo.toml --lib explorer_delivery_bridge_real_rclone_roundtrip -- --nocapture
+if ($LASTEXITCODE) { throw 'Actual Delivery API WinFsp filesystem test failed' }
+Write-Output 'Bundled WinFsp verified: signed installer, native mount, IO, read-only mode, icon, restart recovery, Delivery API bridge.'

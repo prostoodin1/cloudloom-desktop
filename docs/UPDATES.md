@@ -1,6 +1,6 @@
 # Startup updates
 
-Cloudloom Kestrel checks the official GitHub release channel before mounting the profile/file workspace. A newer signed package is downloaded, its signature and signed version are verified, then it is installed and the app restarts. Up-to-date clients open the workspace normally. Offline/check/download/verification failures show a safe **Continue without updating** option; the existing application is not intentionally replaced with unverified bytes. Windows/macOS may ask for installation permissions. A single-instance guard prevents a second startup update while a Kestrel window is already running.
+Cloudloom (Kestrel and newer) checks the official GitHub release channel before mounting the profile/file workspace. A newer signed package is downloaded, its signature and signed version are verified, then it is installed and the app restarts. Up-to-date clients open the workspace normally. Offline/check/download/verification failures show a safe **Continue without updating** option; the existing application is not intentionally replaced with unverified bytes. Windows/macOS may ask for installation permissions. A single-instance guard prevents a second startup update while a Cloudloom window is already running.
 
 Juniper and earlier do not contain the native updater. Install Kestrel once manually; subsequent published native versions can update at startup. Changing source files on GitHub alone does not update native clients: build and publish a newer signed release first. Live JSON presentation updates remain separate.
 

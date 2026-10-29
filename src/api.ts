@@ -14,6 +14,9 @@ export function call<T>(command: string, args?: Record<string, unknown>): Promis
   return invoke<T>(command, args)
 }
 export const providers = [
+  { id: 'putio', name: 'put.io', description: 'Личный диск и медиафайлы', color: '#4c9a8b', letters: 'io', oauth: true },
+  { id: 'zoho', name: 'Zoho WorkDrive', description: 'Командные файлы Zoho', color: '#df6048', letters: 'Zo', oauth: true },
+  { id: 'fichier', name: '1Fichier', description: 'Файловое хранилище по API-ключу', color: '#dd853d', letters: '1F', oauth: false },
   { id: 'drive', name: 'Google Drive', description: 'Личный диск и общие папки', color: '#29a56c', letters: 'G', oauth: true },
   { id: 'onedrive', name: 'OneDrive', description: 'Microsoft 365 и личные файлы', color: '#238ae6', letters: 'O', oauth: true },
   { id: 'dropbox', name: 'Dropbox', description: 'Файлы и совместная работа', color: '#3875f6', letters: 'D', oauth: true },

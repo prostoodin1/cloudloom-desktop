@@ -1,4 +1,4 @@
-# Cloudloom Maple
+# Cloudloom Nectar
 
 A desktop file manager for multiple cloud accounts, with a profile picker, light/dark themes, real file/folder transfers and per-service setup help.
 
@@ -11,10 +11,10 @@ Screenshots show only a neutral local showcase folder, never connected cloud acc
 
 See [Releases](https://github.com/prostoodin1/cloudloom-desktop/releases).
 
-- [**Download Windows installer**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Maple_Windows_x64_Setup.exe) — Windows 10/11 x64, including WebView2 runtime setup when needed.
-- [**Download Windows portable ZIP**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Maple_Windows_x64_Portable.zip) — extract all files, keep the resources folder and run cloudloom.exe. Requires WebView2 Runtime.
-- [**Download Mac Intel DMG**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Maple_macOS_Intel.dmg) — Intel Macs (x86_64).
-- [**Download Mac Apple Silicon DMG**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Maple_macOS_AppleSilicon.dmg) — M-series, ARM64, native build, no Rosetta required.
+- [**Download Windows installer**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Nectar_Windows_x64_Setup.exe) — Windows 10/11 x64, including WebView2 runtime setup when needed.
+- [**Download Windows portable ZIP**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Nectar_Windows_x64_Portable.zip) — extract all files, keep the resources folder and run cloudloom.exe. Requires WebView2 Runtime.
+- [**Download Mac Intel DMG**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Nectar_macOS_Intel.dmg) — Intel Macs (x86_64).
+- [**Download Mac Apple Silicon DMG**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Nectar_macOS_AppleSilicon.dmg) — M-series, ARM64, native build, no Rosetta required.
 - ZIP application bundles and SHA256 checksums are also provided.
 
 Requires **macOS 13 Ventura or later**. Open the DMG and copy Cloudloom into Applications.
@@ -23,9 +23,9 @@ These initial Mac builds are **ad-hoc signed, not Apple Developer ID signed or n
 
 ## Features
 
-Optional Windows Explorer drives with a chosen drive letter, local display name, bundled service badge, read-only/write mode and reconnect-on-Cloudloom-start. Use the small drive button next to a profile. Windows packages include the unmodified official WinFsp installer: install from Cloudloom with confirmation and Windows UAC, without downloading manually. Delivery user-API profiles and Finder mounting are not supported. [Setup, cache safety and verification](docs/EXPLORER.md).
+Optional Windows Explorer drives for all catalogue services, including Delivery user-API profiles, with a chosen drive letter, local display name, bundled service badge, read-only/write mode and reconnect-on-Cloudloom-start. Use the small drive button next to a profile. Windows packages include the unmodified official WinFsp installer: install from Cloudloom with confirmation and Windows UAC, without downloading manually. Finder mounting is not supported. Provider permissions and API limitations still apply. [Setup, cache safety and verification](docs/EXPLORER.md).
 
-- Signed automatic updates at startup, before opening the workspace. Offline/error fallback lets you continue with the installed version. **Juniper and earlier need one manual installation; Kestrel can update to Maple at startup.** Windows installation may require an OS prompt; macOS relaunches after installation. [Update behaviour and publishing](docs/UPDATES.md).
+- Signed automatic updates at startup, before opening the workspace. Offline/error fallback lets you continue with the installed version. **Juniper and earlier need one manual installation; Kestrel can update to Nectar at startup.** Windows installation may require an OS prompt; macOS relaunches after installation. [Update behaviour and publishing](docs/UPDATES.md).
 
 - Per-item **… → Получить ссылку** when the connected backend advertises public-link support. A confirmation dialog is required; opening a preview never creates a public link. Delivery user-API profiles create read-only links for exactly one selected file/folder, with a 1–90 day expiry (7 days by default), optional password and immediate revocation in the result dialog. Server permissions/password policies still apply. Other providers create/retrieve their normal link; password, expiry and revocation are not promised where the adapter does not provide them. Existing Delivery WebDAV profiles do not gain user-API sharing automatically.
 - Video/audio streaming up to **50 GB (50,000,000,000 bytes)** via a random, revocable loopback URL and bounded-memory byte-range reads. No whole-file temporary copy and no public link is created. Closing the viewer cancels active requests; the URL also expires after 24 hours. Seeking requires the storage backend/server to support efficient ranged reads; Delivery responses that ignore/mismatch Range are rejected instead of downloading the entire file. Playback still consumes network traffic and provider egress charges, if applicable. System codecs/container support apply: not every MKV/AVI/HEVC file plays on every OS. Images/text keep the existing bounded temporary-preview/editor path.
@@ -40,7 +40,7 @@ Optional Windows Explorer drives with a chosen drive letter, local display name,
 - Actual folder browsing, file/folder upload/download, rename, confirmed deletion, multi-select, list/grid views and drag/drop.
 - Bounded concurrent transfers, actual progress and cancellation. Temporary network failures are retried automatically. Failed or cancelled transfers can be safely retried during the same app session; Delivery folder retries verify completed files and continue with missing data. Interrupted transfers are labelled on restart; cross-restart resumption is not implemented.
 - Configurations encrypted individually. The encryption password is held in **macOS Keychain**, or Windows Credential Manager on Windows. Tokens are not stored in browser localStorage.
-- 27 service entries with individual setup guides: Google Drive, OneDrive, Dropbox, Google Cloud Storage, Box, pCloud, Yandex Disk, WebDAV, S3-compatible storage, MEGA, Koofr, HiDrive, Backblaze B2, Azure Blob Storage, Storj, Seafile, SFTP, local folders, Delivery, Nextcloud, ownCloud, Proton Drive, OpenDrive, Jottacloud, PikPak, Wasabi and Cloudflare R2. Some are named presets for the same WebDAV/S3 adapter. Proton Drive's adapter is beta.
+- 30 service entries with individual setup guides: Google Drive, OneDrive, Dropbox, Google Cloud Storage, Box, pCloud, Yandex Disk, WebDAV, S3-compatible storage, MEGA, Koofr, HiDrive, Backblaze B2, Azure Blob Storage, Storj, Seafile, SFTP, local folders, Delivery, Nextcloud, ownCloud, Proton Drive, OpenDrive, Jottacloud, PikPak, Wasabi, Cloudflare R2, put.io, Zoho WorkDrive and 1Fichier. Some are named presets for the same WebDAV/S3 adapter. Proton Drive's adapter is beta.
 
 Delivery accepts the ordinary HTTPS website address (including `/web/`), username and password through the SFTPGo user API, with optional HTTP 2FA code in advanced settings. No separate WebDAV endpoint or manual token is required for new profiles. The server must permit user API access and file operations. Old WebDAV profiles remain unchanged. Credentials are stored directly in the OS credential vault; total quota is unavailable through this adapter.
 
@@ -70,7 +70,7 @@ The GitHub workflow builds and tests independently on Intel and Apple Silicon ru
 
 Windows source builds require MSVC C++ Build Tools and WebView2. The same commands build Windows natively; use `npm run tauri build -- --bundles nsis` for the installer. CI checks installation, resources, engine execution, application startup and uninstallation on a clean Windows account.
 
-The public Maple release includes Windows and both Mac variants and is not marked as a prerelease. Windows downloads are not Authenticode signed: SmartScreen may warn or block them. Release status does not remove operating-system security checks. See [release notes](docs/RELEASE.md) for verification scope and known limitations.
+The public Nectar release includes Windows and both Mac variants and is not marked as a prerelease. Windows downloads are not Authenticode signed: SmartScreen may warn or block them. Release status does not remove operating-system security checks. See [release notes](docs/RELEASE.md) for verification scope and known limitations.
 
 ## Public repository
 

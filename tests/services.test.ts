@@ -20,8 +20,8 @@ describe('service setup catalogue', () => {
     expect(guides.nextcloud.intro).toContain('адреса вашего сайта')
     expect(guides.owncloud.note).toContain('remote.php/webdav/')
   })
-  it('has 27 unique services and a dedicated useful guide for each', () => {
-    expect(providers).toHaveLength(27)
+  it('has 30 unique services and a dedicated useful guide for each', () => {
+    expect(providers).toHaveLength(30)
     expect(new Set(providers.map(p => p.id)).size).toBe(providers.length)
     expect(Object.keys(guides).sort()).toEqual(providers.map(p => p.id).sort())
     for (const provider of providers) {
@@ -45,7 +45,7 @@ describe('service setup catalogue', () => {
   it('masks manually entered credentials and preserves an alphabetic release name', () => {
     for (const guide of Object.values(guides)) {
       for (const field of guide.fields ?? []) {
-        if (['pass','password','key','access_grant','library_key','key_file_pass','2fa','mailbox_password','secret_access_key'].includes(field.key)) expect(field.secret).toBe(true)
+        if (['pass','password','key','api_key','access_grant','library_key','key_file_pass','2fa','mailbox_password','secret_access_key'].includes(field.key)) expect(field.secret).toBe(true)
       }
     }
     expect(releaseName).toMatch(/^[a-z]+$/i)

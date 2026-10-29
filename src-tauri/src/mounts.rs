@@ -67,6 +67,7 @@ struct Record {
     appearance: Option<Appearance>,
 }
 struct Session {
+    _bridge: Option<crate::delivery_dav::Bridge>,
     child: Child,
     _job: platform::Job,
     endpoint: String,
@@ -240,12 +241,9 @@ fn dirty_files(root: &Path) -> Result<u64, String> {
     }
     Ok(dirty)
 }
-fn supported(profile: &Profile) -> Result<(), String> {
+fn supported(_profile: &Profile) -> Result<(), String> {
     if !cfg!(windows) {
         return Err("Подключение в Проводник доступно только в Windows".into());
-    }
-    if profile.transport == "sftpgo-api" {
-        return Err("Delivery API пока не поддерживает диск Проводника. Можно отдельно подключить WebDAV, если администратор предоставил его адрес. Обычная работа Delivery в Cloudloom не меняется".into());
     }
     Ok(())
 }
@@ -291,8 +289,30 @@ impl Mounts {
             uuid::Uuid::new_v4().simple(),
             uuid::Uuid::new_v4().simple()
         );
-        let mut child = engine
-            .command(&options.id)
+        let bridge = if let Some(client) = engine.delivery_client(&options.id)? {
+            Some(
+                crate::delivery_dav::Bridge::start(
+                    client,
+                    cache.join("delivery-uploads"),
+                    options.read_only,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let mut command = engine.command(&options.id);
+        if let Some(bridge) = &bridge {
+            command
+                .env("RCLONE_CONFIG_STORAGE_TYPE", "webdav")
+                .env("RCLONE_CONFIG_STORAGE_URL", &bridge.url)
+                .env("RCLONE_CONFIG_STORAGE_VENDOR", "other")
+                .env("RCLONE_CONFIG_STORAGE_BEARER_TOKEN", &bridge.secret)
+                .env("RCLONE_CONFIG_STORAGE_USER", "")
+                .env("RCLONE_CONFIG_STORAGE_PASS", "")
+                .env("NO_PROXY", "127.0.0.1,localhost");
+        }
+        let mut child = command
             .args([
                 "rcd",
                 "--rc-addr",
@@ -320,6 +340,7 @@ impl Mounts {
             }
         };
         let mut session = Session {
+            _bridge: bridge,
             child,
             _job: job,
             endpoint: format!("http://127.0.0.1:{port}"),
@@ -671,6 +692,106 @@ pub(crate) fn open_winfsp_help() -> Result<(), String> {
             .map_err(|_| "Откройте https://winfsp.dev/rel/ в браузере")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[cfg(windows)]
+pub(crate) async fn verify_delivery_mount(
+    client: std::sync::Arc<crate::delivery::Client>,
+    root: PathBuf,
+) {
+    std::fs::create_dir_all(&root).unwrap();
+    let engine = Engine::test_delivery_mount(client.clone(), root);
+    let mounts = Mounts::default();
+    let options = Options {
+        id: "api-test".into(),
+        letter: platform::letters()
+            .first()
+            .expect("Need a free drive letter")
+            .clone(),
+        name: "Cloudloom API QA".into(),
+        read_only: false,
+        auto_mount: false,
+        service_icon: false,
+    };
+    {
+        let mut inner = mounts.inner.lock().await;
+        inner.initialized = true;
+        inner.records.push(Record {
+            options: options.clone(),
+            appearance: None,
+        });
+        mounts.start(&engine, &mut inner, &options).await.unwrap();
+    }
+    let drive = PathBuf::from(format!("{}:\\", options.letter));
+    tokio::fs::write(
+        drive.join("api-mounted.txt"),
+        b"real WinFsp Delivery bridge",
+    )
+    .await
+    .unwrap();
+    let mut uploaded = false;
+    for _ in 0..80 {
+        if client.stat("api-mounted.txt").await.is_ok() {
+            uploaded = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(uploaded, "Mounted write must arrive at the user API");
+    assert_eq!(
+        tokio::fs::read(drive.join("api-mounted.txt"))
+            .await
+            .unwrap(),
+        b"real WinFsp Delivery bridge"
+    );
+    tokio::fs::rename(drive.join("api-mounted.txt"), drive.join("renamed.txt"))
+        .await
+        .unwrap();
+    tokio::fs::remove_file(drive.join("renamed.txt"))
+        .await
+        .unwrap();
+    tokio::fs::create_dir(drive.join("new-folder"))
+        .await
+        .unwrap();
+    tokio::fs::remove_dir(drive.join("new-folder"))
+        .await
+        .unwrap();
+    stop(&engine, &mounts, options.id.clone()).await.unwrap();
+    assert!(client.list("").await.unwrap().is_empty());
+    let seed = engine.directory.join("seed.txt");
+    tokio::fs::write(&seed, b"read uncached from Delivery API")
+        .await
+        .unwrap();
+    client
+        .upload(
+            "remote-seed.txt",
+            &seed,
+            false,
+            std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        )
+        .await
+        .unwrap();
+    let mut readonly = options.clone();
+    readonly.read_only = true;
+    {
+        let mut inner = mounts.inner.lock().await;
+        inner.records[0].options = readonly.clone();
+        mounts.start(&engine, &mut inner, &readonly).await.unwrap();
+    }
+    assert_eq!(
+        tokio::fs::read(drive.join("remote-seed.txt"))
+            .await
+            .unwrap(),
+        b"read uncached from Delivery API"
+    );
+    assert!(
+        tokio::fs::write(drive.join("forbidden.txt"), b"blocked")
+            .await
+            .is_err()
+    );
+    stop(&engine, &mounts, options.id).await.unwrap();
+    client.delete("remote-seed.txt", false).await.unwrap();
 }
 
 #[cfg(test)]

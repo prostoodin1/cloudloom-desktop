@@ -250,6 +250,197 @@ async fn upload_deadline_tracks_inactivity_instead_of_total_duration() {
 }
 
 #[tokio::test]
+async fn explorer_delivery_bridge_real_rclone_roundtrip() {
+    let server = fixture();
+    let mut client = Client::new(Credentials {
+        site: "https://fixture.invalid/".into(),
+        user: "fixture".into(),
+        password: "fixture-only".into(),
+    })
+    .unwrap();
+    client.base = tauri::Url::parse(&server.url).unwrap();
+    let client = Arc::new(client);
+    let root = std::env::temp_dir().join(format!("cloudloom-dav-test-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    let bridge = crate::delivery_dav::Bridge::start(client.clone(), root.join("uploads"), false)
+        .await
+        .unwrap();
+    let http = Http::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    assert_eq!(
+        http.get(&bridge.url).send().await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        http.get(&bridge.url)
+            .bearer_auth(&bridge.secret)
+            .header("Origin", "https://untrusted.invalid")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let binary = Path::new(env!("CARGO_MANIFEST_DIR")).join(if cfg!(windows) {
+        "resources/rclone.exe"
+    } else {
+        "resources/rclone"
+    });
+    assert!(
+        binary.is_file(),
+        "Prepare the pinned engine before running the integration suite"
+    );
+    let config = root.join("empty.conf");
+    std::fs::write(&config, "").unwrap();
+    let run = |args: Vec<String>| {
+        let mut command = tokio::process::Command::new(&binary);
+        command
+            .arg("--config")
+            .arg(&config)
+            .arg("--retries=1")
+            .arg("--low-level-retries=1")
+            .env("RCLONE_CONFIG_STORAGE_TYPE", "webdav")
+            .env("RCLONE_CONFIG_STORAGE_URL", &bridge.url)
+            .env("RCLONE_CONFIG_STORAGE_VENDOR", "other")
+            .env("RCLONE_CONFIG_STORAGE_BEARER_TOKEN", &bridge.secret)
+            .env("NO_PROXY", "127.0.0.1,localhost")
+            .args(args)
+            .kill_on_drop(true);
+        async move {
+            let output = tokio::time::timeout(Duration::from_secs(60), command.output())
+                .await
+                .expect("rclone timed out")
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            output.stdout
+        }
+    };
+    let source = root.join("source.txt");
+    let bytes = b"0123456789 bridge data";
+    std::fs::write(&source, bytes).unwrap();
+    run(vec!["mkdir".into(), "storage:folder".into()]).await;
+    let name = "folder/тест & 100%20.txt";
+    run(vec![
+        "copyto".into(),
+        source.to_string_lossy().into_owned(),
+        format!("storage:{name}"),
+    ])
+    .await;
+    let listed: Value =
+        serde_json::from_slice(&run(vec!["lsjson".into(), "storage:folder".into()]).await).unwrap();
+    assert_eq!(listed[0]["Name"], "тест & 100%20.txt");
+    assert!(
+        listed[0]["ModTime"]
+            .as_str()
+            .unwrap()
+            .starts_with("2026-10-10")
+    );
+    let url = {
+        let mut url = tauri::Url::parse(&bridge.url).unwrap();
+        url.path_segments_mut()
+            .unwrap()
+            .clear()
+            .extend(name.split('/'));
+        url
+    };
+    let partial = http
+        .get(url.clone())
+        .bearer_auth(&bridge.secret)
+        .header("Range", "bytes=4-8")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(partial.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(&partial.bytes().await.unwrap()[..], &bytes[4..=8]);
+    assert_eq!(
+        run(vec!["cat".into(), format!("storage:{name}")]).await,
+        bytes
+    );
+    run(vec![
+        "moveto".into(),
+        format!("storage:{name}"),
+        "storage:folder/renamed.txt".into(),
+    ])
+    .await;
+    std::fs::write(&source, b"replacement").unwrap();
+    run(vec![
+        "copyto".into(),
+        source.to_string_lossy().into_owned(),
+        "storage:folder/renamed.txt".into(),
+        "--ignore-times".into(),
+    ])
+    .await;
+    assert_eq!(
+        run(vec!["cat".into(), "storage:folder/renamed.txt".into()]).await,
+        b"replacement"
+    );
+    let readonly = crate::delivery_dav::Bridge::start(client.clone(), root.join("readonly"), true)
+        .await
+        .unwrap();
+    for method in ["PUT", "MKCOL", "DELETE", "MOVE"] {
+        assert_eq!(
+            http.request(
+                Method::from_bytes(method.as_bytes()).unwrap(),
+                format!("{}folder/renamed.txt", readonly.url)
+            )
+            .bearer_auth(&readonly.secret)
+            .body("must not write")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+    assert_eq!(
+        http.request(Method::from_bytes(b"PROPFIND").unwrap(), &bridge.url)
+            .bearer_auth(&bridge.secret)
+            .header("Depth", "infinity")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let invalid_move = http
+        .request(
+            Method::from_bytes(b"MOVE").unwrap(),
+            format!("{}folder/renamed.txt", bridge.url),
+        )
+        .bearer_auth(&bridge.secret)
+        .header("Destination", "https://untrusted.invalid/stolen.txt")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(invalid_move.status(), StatusCode::FORBIDDEN);
+    run(vec![
+        "deletefile".into(),
+        "storage:folder/renamed.txt".into(),
+    ])
+    .await;
+    run(vec!["rmdir".into(), "storage:folder".into()]).await;
+    assert!(client.list("").await.unwrap().is_empty());
+    assert_eq!(std::fs::read_dir(root.join("uploads")).unwrap().count(), 0);
+    #[cfg(windows)]
+    if std::env::var("CLOUDLOOM_TEST_MOUNTS").as_deref() == Ok("1") {
+        crate::mounts::verify_delivery_mount(client.clone(), root.join("mount")).await;
+    }
+    let old_url = bridge.url.clone();
+    drop(bridge);
+    drop(readonly);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(http.get(old_url).send().await.is_err());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn user_api_file_folder_preview_and_error_roundtrip() {
     let server = fixture();
     let real = std::env::var("CLOUDLOOM_TEST_SFTPGO_URL").ok();

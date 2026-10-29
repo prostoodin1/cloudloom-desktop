@@ -1,6 +1,6 @@
 [package]
 name = "cloudloom"
-version = "0.10.0"
+version = "0.11.0"
 description = "A universal desktop cloud file manager for studio-scale media"
 authors = ["Studio Red Barcelona"]
 license = "MIT"
@@ -31,6 +31,8 @@ tauri-plugin-single-instance = "2"
 reqwest = { version = "0.13", default-features = false, features = ["json", "query", "stream", "rustls"] }
 tokio-util = { version = "0.7", features = ["io", "rt"] }
 futures-util = "0.3"
+percent-encoding = "2"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]

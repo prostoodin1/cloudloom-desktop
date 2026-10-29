@@ -216,6 +216,15 @@ impl Engine {
         }
     }
     #[cfg(test)]
+    pub(crate) fn test_delivery_mount(
+        client: Arc<crate::delivery::Client>,
+        directory: PathBuf,
+    ) -> Self {
+        let mut engine = Self::test_delivery(client, directory);
+        engine.binary = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(engine_resource_name());
+        engine
+    }
+    #[cfg(test)]
     pub(crate) fn test_delivery(client: Arc<crate::delivery::Client>, directory: PathBuf) -> Self {
         Self {
             binary: directory.join("must-not-run-rclone.exe"),
@@ -520,7 +529,7 @@ fn service_help_url(provider: &str) -> Result<String, String> {
         "alias" => "local/",
         "onedrive" | "dropbox" | "box" | "pcloud" | "yandex" | "webdav" | "s3" | "mega"
         | "koofr" | "hidrive" | "b2" | "azureblob" | "storj" | "seafile" | "sftp"
-        | "protondrive" | "opendrive" | "jottacloud" | "pikpak" => {
+        | "protondrive" | "opendrive" | "jottacloud" | "pikpak" | "putio" | "zoho" | "fichier" => {
             return Ok(format!("https://rclone.org/{provider}/"));
         }
         _ => return Err("Нет инструкции для этого сервиса".into()),
@@ -599,6 +608,9 @@ pub async fn connect_profile(
         return Err("Укажите название профиля".into());
     }
     let allowed = [
+        "putio",
+        "zoho",
+        "fichier",
         "drive",
         "google cloud storage",
         "onedrive",
@@ -784,6 +796,7 @@ pub async fn connect_profile(
         "--obscure".into(),
     ];
     let valid_keys = [
+        "api_key",
         "client_id",
         "client_secret",
         "scope",
@@ -1578,6 +1591,9 @@ mod tests {
         assert!(output.status.success());
         let catalogue: Value = serde_json::from_slice(&output.stdout).unwrap();
         for (provider, keys) in [
+            ("putio", vec!["client_id", "client_secret"]),
+            ("zoho", vec!["client_id", "client_secret", "region"]),
+            ("fichier", vec!["api_key"]),
             ("webdav", vec!["url", "vendor", "user", "pass"]),
             (
                 "s3",

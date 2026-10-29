@@ -5,7 +5,7 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 (async () => {
  const text = fs.readFileSync('src/api.ts','utf8');
  const services = [...text.matchAll(/\{ id: '([^']+)', name: '[^']+', description: '[^']+', color: '(#[a-f0-9]+)', letters: '([^']+)'/g)];
- if (services.length !== 27) throw Error('Update the icon generator for the service catalogue');
+ if (services.length !== 30) throw Error('Update the icon generator for the service catalogue');
  const browser = await chromium.launch({headless:true,channel:'msedge'});
  const page = await browser.newPage();
  fs.mkdirSync('src-tauri/icons/drives',{recursive:true});
