@@ -36,9 +36,15 @@ async fn real_windows_mount_read_write_readonly_and_appearance() {
     let mut options = Options {
         id: "mount-test".into(),
         letter: platform::letters()
-            .first()
-            .expect("Need one free drive letter")
-            .clone(),
+            .into_iter()
+            .find(|letter| {
+                winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
+                    .open_subkey(format!(
+                        r"Software\Classes\Applications\Explorer.exe\Drives\{letter}"
+                    ))
+                    .is_err()
+            })
+            .expect("Need one free drive letter without existing user appearance overrides"),
         name: format!(
             "Cloudloom QA {}",
             &uuid::Uuid::new_v4().simple().to_string()[..6]
@@ -46,6 +52,7 @@ async fn real_windows_mount_read_write_readonly_and_appearance() {
         read_only: false,
         auto_mount: true,
         service_icon: true,
+        cache_directory: None,
     };
     {
         let mut inner = mounts.inner.lock().await;

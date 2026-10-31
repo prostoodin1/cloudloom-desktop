@@ -1,4 +1,4 @@
-export const releaseName = 'Nectar'
+export const releaseName = 'Opal'
 export interface SetupField { key: string; label: string; secret?: boolean; required?: boolean; placeholder?: string; advanced?: boolean }
 export interface SetupGuide { intro: string; steps: string[]; note?: string; fields?: SetupField[] }
 export const guides: Record<string, SetupGuide> = {

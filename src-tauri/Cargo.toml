@@ -1,6 +1,6 @@
 [package]
 name = "cloudloom"
-version = "0.11.0"
+version = "0.12.0"
 description = "A universal desktop cloud file manager for studio-scale media"
 authors = ["Studio Red Barcelona"]
 license = "MIT"

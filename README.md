@@ -1,4 +1,4 @@
-# Cloudloom Nectar
+# Cloudloom Opal
 
 A desktop file manager for multiple cloud accounts, with a profile picker, light/dark themes, real file/folder transfers and per-service setup help.
 
@@ -11,10 +11,10 @@ Screenshots show only a neutral local showcase folder, never connected cloud acc
 
 See [Releases](https://github.com/prostoodin1/cloudloom-desktop/releases).
 
-- [**Download Windows installer**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Nectar_Windows_x64_Setup.exe) — Windows 10/11 x64, including WebView2 runtime setup when needed.
-- [**Download Windows portable ZIP**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Nectar_Windows_x64_Portable.zip) — extract all files, keep the resources folder and run cloudloom.exe. Requires WebView2 Runtime.
-- [**Download Mac Intel DMG**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Nectar_macOS_Intel.dmg) — Intel Macs (x86_64).
-- [**Download Mac Apple Silicon DMG**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Nectar_macOS_AppleSilicon.dmg) — M-series, ARM64, native build, no Rosetta required.
+- [**Download Windows installer**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Opal_Windows_x64_Setup.exe) — Windows 10/11 x64, including WebView2 runtime setup when needed.
+- [**Download Windows portable ZIP**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Opal_Windows_x64_Portable.zip) — extract all files, keep the resources folder and run cloudloom.exe. Requires WebView2 Runtime.
+- [**Download Mac Intel DMG**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Opal_macOS_Intel.dmg) — Intel Macs (x86_64).
+- [**Download Mac Apple Silicon DMG**](https://github.com/prostoodin1/cloudloom-desktop/releases/latest/download/Cloudloom_Opal_macOS_AppleSilicon.dmg) — M-series, ARM64, native build, no Rosetta required.
 - ZIP application bundles and SHA256 checksums are also provided.
 
 Requires **macOS 13 Ventura or later**. Open the DMG and copy Cloudloom into Applications.
@@ -23,9 +23,11 @@ These initial Mac builds are **ad-hoc signed, not Apple Developer ID signed or n
 
 ## Features
 
+Opal adds a per-profile transfer buffer folder on a local/external drive. Pending writes block relocating the buffer. New Explorer connections allow writes by default; saved read-only disks show an explicit status and an **Enable writing** action that reconnects safely. Ordinary in-app transfers stream directly between the source and destination.
+
 Optional Windows Explorer drives for all catalogue services, including Delivery user-API profiles, with a chosen drive letter, local display name, bundled service badge, read-only/write mode and reconnect-on-Cloudloom-start. Use the small drive button next to a profile. Windows packages include the unmodified official WinFsp installer: install from Cloudloom with confirmation and Windows UAC, without downloading manually. Finder mounting is not supported. Provider permissions and API limitations still apply. [Setup, cache safety and verification](docs/EXPLORER.md).
 
-- Signed automatic updates at startup, before opening the workspace. Offline/error fallback lets you continue with the installed version. **Juniper and earlier need one manual installation; Kestrel can update to Nectar at startup.** Windows installation may require an OS prompt; macOS relaunches after installation. [Update behaviour and publishing](docs/UPDATES.md).
+- Signed automatic updates at startup, before opening the workspace. Offline/error fallback lets you continue with the installed version. **Juniper and earlier need one manual installation; Kestrel can update to Opal at startup.** Windows installation may require an OS prompt; macOS relaunches after installation. [Update behaviour and publishing](docs/UPDATES.md).
 
 - Per-item **… → Получить ссылку** when the connected backend advertises public-link support. A confirmation dialog is required; opening a preview never creates a public link. Delivery user-API profiles create read-only links for exactly one selected file/folder, with a 1–90 day expiry (7 days by default), optional password and immediate revocation in the result dialog. Server permissions/password policies still apply. Other providers create/retrieve their normal link; password, expiry and revocation are not promised where the adapter does not provide them. Existing Delivery WebDAV profiles do not gain user-API sharing automatically.
 - Video/audio streaming up to **50 GB (50,000,000,000 bytes)** via a random, revocable loopback URL and bounded-memory byte-range reads. No whole-file temporary copy and no public link is created. Closing the viewer cancels active requests; the URL also expires after 24 hours. Seeking requires the storage backend/server to support efficient ranged reads; Delivery responses that ignore/mismatch Range are rejected instead of downloading the entire file. Playback still consumes network traffic and provider egress charges, if applicable. System codecs/container support apply: not every MKV/AVI/HEVC file plays on every OS. Images/text keep the existing bounded temporary-preview/editor path.
@@ -70,7 +72,7 @@ The GitHub workflow builds and tests independently on Intel and Apple Silicon ru
 
 Windows source builds require MSVC C++ Build Tools and WebView2. The same commands build Windows natively; use `npm run tauri build -- --bundles nsis` for the installer. CI checks installation, resources, engine execution, application startup and uninstallation on a clean Windows account.
 
-The public Nectar release includes Windows and both Mac variants and is not marked as a prerelease. Windows downloads are not Authenticode signed: SmartScreen may warn or block them. Release status does not remove operating-system security checks. See [release notes](docs/RELEASE.md) for verification scope and known limitations.
+The public Opal release includes Windows and both Mac variants and is not marked as a prerelease. Windows downloads are not Authenticode signed: SmartScreen may warn or block them. Release status does not remove operating-system security checks. See [release notes](docs/RELEASE.md) for verification scope and known limitations.
 
 ## Public repository
 

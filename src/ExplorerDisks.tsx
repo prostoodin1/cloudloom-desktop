@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react'
 import { ExternalLink, HardDrive, LoaderCircle, RefreshCw, Unplug, X } from 'lucide-react'
 import { call, desktop, service, type Profile } from './api'
+import { open as chooseFolder } from '@tauri-apps/plugin-dialog'
 import './explorer-disks.css'
 
-export interface DiskOptions { id: string; letter: string; name: string; readOnly: boolean; autoMount: boolean; serviceIcon: boolean }
+export interface DiskOptions { id: string; letter: string; name: string; readOnly: boolean; autoMount: boolean; serviceIcon: boolean; cacheDirectory?: string | null }
 interface Disk { options: DiskOptions; mounted: boolean; pending: number | null; error: string | null }
-interface Overview { windows: boolean; winFsp: boolean; letters: string[]; disks: Disk[] }
+interface Overview { windows: boolean; winFsp: boolean; letters: string[]; disks: Disk[]; defaultCacheDirectory?: string }
 function defaults(profile: Profile, overview: Overview): DiskOptions {
-  return overview.disks.find(d => d.options.id === profile.id)?.options ?? { id: profile.id, letter: overview.letters[0] ?? '', name: `${service(profile.provider).name} — ${profile.name}`.slice(0, 32).trim(), readOnly: true, autoMount: false, serviceIcon: true }
+  return overview.disks.find(d => d.options.id === profile.id)?.options ?? { id: profile.id, letter: overview.letters[0] ?? '', name: `${service(profile.provider).name} — ${profile.name}`.slice(0, 32).trim(), readOnly: false, autoMount: false, serviceIcon: true }
 }
 export interface ExplorerDisksHandle { selectProfile: (id: string) => void }
 export function ExplorerDisks({ profiles, open, onClose, ref }: { profiles: Profile[]; open: boolean; onClose: () => void; ref?: Ref<ExplorerDisksHandle> }) {
@@ -74,6 +75,27 @@ export function ExplorerDisks({ profiles, open, onClose, ref }: { profiles: Prof
     catch (e) { setError(String(e)) }
     finally { await refresh(); lock.current = false; setBusy(false) }
   }
+  const chooseCache = async () => {
+    if (!form || lock.current || mounted) return
+    lock.current = true; setBusy(true); setError('')
+    try {
+      const folder = await chooseFolder({ directory: true, multiple: false, title: 'Выберите папку буфера на локальном или внешнем накопителе' })
+      if (typeof folder === 'string') setForm({ ...form, cacheDirectory: folder })
+    } catch (e) { setError(String(e)) }
+    finally { lock.current = false; setBusy(false) }
+  }
+  const enableWriting = async () => {
+    if (!form || !disk?.mounted || !disk.options.readOnly || lock.current) return
+    if (!window.confirm('Включить запись на этом диске? Закройте использующие его файлы. Диск переподключится; изменение и удаление в Проводнике будут менять файлы в облаке. Права сервера сохраняются.')) return
+    const options = { ...disk.options, readOnly: false }
+    lock.current = true; setBusy(true); setError('')
+    try {
+      await call('disconnect_explorer', { id: options.id })
+      setForm(options)
+      await call('connect_explorer', { options })
+    } catch (e) { setError(String(e)) }
+    finally { await refresh(); lock.current = false; setBusy(false) }
+  }
   const install = async () => {
     if (lock.current || !window.confirm('Установить WinFsp из пакета Cloudloom? Откроется официальный установщик драйвера. Windows запросит права администратора; подтвердите установку и лицензию в его окне.')) return
     lock.current = true; setBusy(true); setError(''); setInstallation('Завершите установку WinFsp в окне Windows…')
@@ -99,9 +121,11 @@ export function ExplorerDisks({ profiles, open, onClose, ref }: { profiles: Prof
       {profile.transport === 'sftpgo-api' && <div className="explorer-notice">Delivery подключается с сохранённым входом. Отдельный адрес WebDAV не нужен. Доступ к файлам определяется правами вашего аккаунта.</div>}
       <div className="disk-fields"><label className="disk-field">Буква диска<select value={form.letter} disabled={busy || mounted} onChange={e => set({ letter: e.target.value })}>{[...new Set([form.letter, ...overview.letters])].filter(Boolean).map(letter => <option key={letter} value={letter}>{letter}:</option>)}{!form.letter && <option value="">Нет свободных букв</option>}</select></label><label className="disk-field">Название в Проводнике<input maxLength={32} value={form.name} disabled={busy || mounted} onChange={e => set({ name: e.target.value })}/></label></div>
       <div className="disk-checkboxes"><label><input type="checkbox" checked={form.serviceIcon} disabled={busy || mounted} onChange={e => set({ serviceIcon: e.target.checked })}/>Значок сервиса (логотип или цветной буквенный значок)</label><label><input type="checkbox" checked={form.readOnly} disabled={busy || mounted} onChange={e => set({ readOnly: e.target.checked })}/>Только чтение — без изменения и удаления облачных файлов</label><label><input type="checkbox" checked={form.autoMount} disabled={busy || mounted} onChange={e => set({ autoMount: e.target.checked })}/>Подключать при запуске Cloudloom</label></div>
+      <section className="disk-buffer" aria-label="Буфер передачи"><label className="disk-field">Папка буфера передачи<input readOnly value={form.cacheDirectory || overview.defaultCacheDirectory || 'По умолчанию — папка данных Cloudloom на этом компьютере'}/></label><div className="disk-buffer-actions"><button className="button subtle" disabled={busy || mounted} onClick={() => { void chooseCache() }}>Выбрать папку…</button><button className="button subtle" disabled={busy || mounted || !form.cacheDirectory} onClick={() => set({ cacheDirectory: null })}>По умолчанию</button></div><p>Используется для чтения и отправки файлов через Проводник, включая Delivery. Можно выбрать локальный диск или внешний накопитель. Для смены папки отключите диск и дождитесь отправки файлов. Старый буфер автоматически не переносится и не удаляется. Обычные передачи внутри Cloudloom идут напрямую между файлом и облаком.</p></section>
+      {form.readOnly && <p className="explorer-notice"><strong>Только чтение: загрузка на этот диск запрещена.</strong> Windows покажет «Диск защищён от записи». {mounted ? 'Нажмите «Включить запись», чтобы разрешить загрузку.' : 'Для загрузки файлов снимите флажок «Только чтение» перед подключением.'}</p>}
       {!form.readOnly && <p className="explorer-notice">Запись включена: изменение или удаление в Проводнике изменит файлы в облаке. Отправка начинается после закрытия файла. Перед отключением закройте использующие диск программы и дождитесь отправки.</p>}
       <p className="explorer-cache">Диск работает, пока открыт Cloudloom. Кэш хранится локально без дополнительного шифрования: чтение по частям, запись через кэш. Целевой размер — 10 ГБ, резерв — 1 ГБ; открытые и неотправленные файлы могут превысить лимит. Это не полностью офлайн-копия и не защита от конфликтов между программами.</p>
-      {disk?.mounted && <div className="disk-state" role="status"><strong>{disk.options.letter}: · {disk.options.name}</strong><span>Подключён · очередь/ошибки: {disk.pending ?? 'неизвестно'}</span><small>Чтобы переименовать, сменить букву или режим, отключите диск и подключите с новыми настройками.</small></div>}
+      {disk?.mounted && <div className="disk-state" role="status"><strong>{disk.options.letter}: · {disk.options.name}</strong><span>{disk.options.readOnly ? 'Только чтение · загрузка запрещена' : 'Чтение и запись · загрузка разрешена'}</span><span>Подключён · очередь/ошибки: {disk.pending ?? 'неизвестно'}</span>{disk.options.readOnly && <button className="button primary" disabled={busy} onClick={() => { void enableWriting() }}>Включить запись</button>}<small>Чтобы переименовать, сменить букву или папку буфера, отключите диск и подключите с новыми настройками.</small></div>}
       {disk?.error && <p className="error" role="alert">{disk.error}</p>}
       <footer>{mounted ? <><button className="button primary" disabled={busy} onClick={() => { void action('open_explorer') }}><ExternalLink size={16}/>Открыть Проводник</button><button className="button subtle" disabled={busy} onClick={() => { void action('disconnect_explorer') }}><Unplug size={16}/>Отключить диск</button></> : <button className="button primary" disabled={busy || !overview.windows || !overview.winFsp || restartRequired || !form.letter || !form.name.trim()} onClick={() => { void action('connect_explorer') }}>{busy ? <LoaderCircle className="spin" size={16}/> : <HardDrive size={16}/>}Подключить диск</button>}<button className="button subtle" aria-label="Обновить диски" disabled={busy} onClick={() => { void refresh() }}><RefreshCw size={16}/></button></footer>
     </>}

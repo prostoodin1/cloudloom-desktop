@@ -52,6 +52,8 @@ pub(crate) struct Options {
     pub read_only: bool,
     pub auto_mount: bool,
     pub service_icon: bool,
+    #[serde(default)]
+    pub cache_directory: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Appearance {
@@ -134,6 +136,7 @@ pub(crate) struct Overview {
     win_fsp: bool,
     letters: Vec<String>,
     disks: Vec<Disk>,
+    default_cache_directory: String,
 }
 #[derive(Default)]
 struct Inner {
@@ -181,6 +184,79 @@ fn validate(options: &Options) -> Result<(), String> {
 }
 fn records_path(engine: &Engine) -> PathBuf {
     engine.directory.join("explorer-disks.json")
+}
+fn cache_path(engine: &Engine, options: &Options) -> PathBuf {
+    options
+        .cache_directory
+        .as_ref()
+        .map(|root| PathBuf::from(root).join("Cloudloom-buffer"))
+        .unwrap_or_else(|| engine.directory.join("explorer-cache"))
+        .join(&options.id)
+}
+fn check_cache_change(engine: &Engine, old: &Options, new: &Options) -> Result<(), String> {
+    if cache_path(engine, old) != cache_path(engine, new) {
+        if let Some(path) = &old.cache_directory {
+            if !Path::new(path).is_dir() {
+                return Err("Подключите накопитель со старым буфером: сначала нужно проверить неотправленные файлы".into());
+            }
+        }
+        if dirty_files(&cache_path(engine, old).join("vfsMeta"))? > 0 {
+            return Err("В старом буфере есть неотправленные файлы. Подключите диск с прежней папкой буфера и записью, дождитесь отправки и только затем меняйте папку".into());
+        }
+    }
+    Ok(())
+}
+fn prepare_cache_directory(options: &mut Options) -> Result<(), String> {
+    let Some(path) = &options.cache_directory else {
+        return Ok(());
+    };
+    if path.len() > 32000 || !Path::new(path).is_absolute() {
+        return Err("Выберите существующую папку на локальном накопителе".into());
+    }
+    let path = std::fs::canonicalize(path)
+        .map_err(|_| "Папка буфера недоступна. Подключите накопитель или выберите другую папку")?;
+    if !path.is_dir() {
+        return Err("Буфер должен находиться в папке".into());
+    }
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        let letter = match path.components().next() {
+            Some(Component::Prefix(p)) => match p.kind() {
+                Prefix::Disk(d) | Prefix::VerbatimDisk(d) => d,
+                _ => {
+                    return Err(
+                        "Для буфера нужен локальный или внешний накопитель, не сетевой диск".into(),
+                    );
+                }
+            },
+            _ => return Err("Неверная папка буфера".into()),
+        };
+        let volume: Vec<u16> = format!("{}:\\", letter as char)
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        let kind =
+            unsafe { windows_sys::Win32::Storage::FileSystem::GetDriveTypeW(volume.as_ptr()) };
+        if ![2, 3].contains(&kind) {
+            return Err("Для буфера нужен локальный или внешний накопитель. Облачный диск использовать нельзя".into());
+        }
+    }
+    let probe = path.join(format!(".cloudloom-write-check-{}", uuid::Uuid::new_v4()));
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .map_err(|_| "Нет права записи в папку буфера")?;
+    drop(file);
+    std::fs::remove_file(probe).map_err(|_| "Не удалось удалить проверочный файл из буфера")?;
+    options.cache_directory = Some(
+        path.to_string_lossy()
+            .strip_prefix("\\\\?\\")
+            .unwrap_or(&path.to_string_lossy())
+            .to_string(),
+    );
+    Ok(())
 }
 fn save(engine: &Engine, records: &[Record]) -> Result<(), String> {
     // Write a sibling first; a failed write must not truncate the last valid settings.
@@ -274,7 +350,9 @@ impl Mounts {
         }) {
             return Err("У подключённого диска уже есть такое название".into());
         }
-        let cache = engine.directory.join("explorer-cache").join(&options.id);
+        let mut checked_options = options.clone();
+        prepare_cache_directory(&mut checked_options)?;
+        let cache = cache_path(engine, &checked_options);
         std::fs::create_dir_all(&cache).map_err(|_| "Не удалось создать кэш диска")?;
         if options.read_only && dirty_files(&cache.join("vfsMeta"))? > 0 {
             return Err("В кэше есть неотправленные изменения. Сначала подключите этот профиль с записью для восстановления отправки".into());
@@ -422,14 +500,16 @@ impl Mounts {
         if inner.sessions.contains_key(id) {
             return Err("Сначала отключите диск Проводника этого профиля".into());
         }
-        if dirty_files(
-            &engine
-                .directory
-                .join("explorer-cache")
-                .join(id)
-                .join("vfsMeta"),
-        )? > 0
-        {
+        let stored = inner.records.iter().find(|r| r.options.id == id);
+        if let Some(root) = stored.and_then(|r| r.options.cache_directory.as_ref()) {
+            if !Path::new(root).is_dir() {
+                return Err("Подключите накопитель с буфером перед удалением профиля".into());
+            }
+        }
+        let cache = stored
+            .map(|r| cache_path(engine, &r.options))
+            .unwrap_or_else(|| engine.directory.join("explorer-cache").join(id));
+        if dirty_files(&cache.join("vfsMeta"))? > 0 {
             return Err("В кэше диска есть неотправленные изменения. Подключите диск с записью и дождитесь отправки перед удалением профиля".into());
         }
         if let Some(record) = inner.records.iter().find(|r| r.options.id == id) {
@@ -557,6 +637,11 @@ pub(crate) async fn explorer_disks(
     }
     mounts.active.store(inner.sessions.len(), Ordering::SeqCst);
     Ok(Overview {
+        default_cache_directory: engine
+            .directory
+            .join("explorer-cache")
+            .to_string_lossy()
+            .into_owned(),
         windows: cfg!(windows),
         win_fsp: platform::installed(),
         letters: platform::letters(),
@@ -575,10 +660,11 @@ fn platform_cleanup(_: &Appearance) -> Result<(), String> {
 pub(crate) async fn connect_explorer(
     engine: State<'_, Engine>,
     mounts: State<'_, Mounts>,
-    options: Options,
+    mut options: Options,
 ) -> Result<(), String> {
     let _lifecycle = mounts.lifecycle.lock().await;
     validate(&options)?;
+    prepare_cache_directory(&mut options)?;
     supported(&engine.profile(&options.id)?)?;
     let mut inner = mounts.inner.lock().await;
     if !inner.initialized {
@@ -588,6 +674,7 @@ pub(crate) async fn connect_explorer(
         return Err("Отключите диск перед изменением настроек".into());
     }
     if let Some(old) = inner.records.iter().find(|r| r.options.id == options.id) {
+        check_cache_change(&engine, &old.options, &options)?;
         if old.appearance.is_some() {
             return Err("Предыдущее оформление ещё используется. Освободите букву и перезапустите приложение".into());
         }
@@ -713,6 +800,7 @@ pub(crate) async fn verify_delivery_mount(
         read_only: false,
         auto_mount: false,
         service_icon: false,
+        cache_directory: Some(engine.directory.to_string_lossy().into_owned()),
     };
     {
         let mut inner = mounts.inner.lock().await;
@@ -722,8 +810,18 @@ pub(crate) async fn verify_delivery_mount(
             appearance: None,
         });
         mounts.start(&engine, &mut inner, &options).await.unwrap();
+        assert_eq!(
+            inner.sessions[&options.id].cache,
+            engine.directory.join("Cloudloom-buffer").join(&options.id)
+        );
     }
     let drive = PathBuf::from(format!("{}:\\", options.letter));
+    let mut recursive = options.clone();
+    recursive.cache_directory = Some(drive.to_string_lossy().into_owned());
+    assert!(
+        prepare_cache_directory(&mut recursive).is_err(),
+        "A cloud disk must never buffer itself"
+    );
     tokio::fs::write(
         drive.join("api-mounted.txt"),
         b"real WinFsp Delivery bridge",
@@ -797,6 +895,52 @@ pub(crate) async fn verify_delivery_mount(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn custom_buffer_preserves_pending_data_and_old_settings() {
+        let root =
+            std::env::temp_dir().join(format!("cloudloom-buffer-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let engine = Engine::test_mount(root.clone());
+        let old: Options = serde_json::from_value(json!({"id":"mount-test","letter":"Z","name":"Test","readOnly":true,"autoMount":false,"serviceIcon":true})).unwrap();
+        assert!(old.cache_directory.is_none());
+        let other = root.join("chosen");
+        std::fs::create_dir(&other).unwrap();
+        let mut new = old.clone();
+        new.cache_directory = Some(other.to_string_lossy().into_owned());
+        prepare_cache_directory(&mut new).unwrap();
+        assert_eq!(
+            cache_path(&engine, &new),
+            other.join("Cloudloom-buffer/mount-test")
+        );
+        let metadata = cache_path(&engine, &old).join("vfsMeta/storage");
+        std::fs::create_dir_all(&metadata).unwrap();
+        let pending = metadata.join("pending.json");
+        std::fs::write(&pending, br#"{"Dirty":true}"#).unwrap();
+        assert!(check_cache_change(&engine, &old, &new).is_err());
+        assert!(
+            pending.is_file(),
+            "Changing buffer must never discard pending writes"
+        );
+        std::fs::write(&pending, br#"{"Dirty":false}"#).unwrap();
+        check_cache_change(&engine, &old, &new).unwrap();
+        let mut relative = old.clone();
+        relative.cache_directory = Some("relative/path".into());
+        assert!(prepare_cache_directory(&mut relative).is_err());
+        let mut disconnected = old.clone();
+        disconnected.cache_directory = Some(
+            root.join("disconnected-disk")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        assert!(check_cache_change(&engine, &disconnected, &new).is_err());
+        assert_eq!(
+            std::fs::read_dir(&other).unwrap().count(),
+            0,
+            "Only a disposable write probe is allowed during selection"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn validates_only_plain_drive_letters_and_labels() {
         let mut o = Options {
@@ -806,6 +950,7 @@ mod tests {
             read_only: true,
             auto_mount: false,
             service_icon: true,
+            cache_directory: None,
         };
         assert!(validate(&o).is_ok());
         for letter in ["C", "z", "Z:", "Z:/foo", "\\\\host\\share", "A"] {
