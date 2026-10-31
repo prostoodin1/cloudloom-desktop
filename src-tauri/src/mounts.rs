@@ -811,8 +811,9 @@ pub(crate) async fn verify_delivery_mount(
         });
         mounts.start(&engine, &mut inner, &options).await.unwrap();
         assert_eq!(
-            inner.sessions[&options.id].cache,
-            engine.directory.join("Cloudloom-buffer").join(&options.id)
+            std::fs::canonicalize(&inner.sessions[&options.id].cache).unwrap(),
+            std::fs::canonicalize(engine.directory.join("Cloudloom-buffer").join(&options.id))
+                .unwrap()
         );
     }
     let drive = PathBuf::from(format!("{}:\\", options.letter));
@@ -910,8 +911,18 @@ mod tests {
         new.cache_directory = Some(other.to_string_lossy().into_owned());
         prepare_cache_directory(&mut new).unwrap();
         assert_eq!(
-            cache_path(&engine, &new),
-            other.join("Cloudloom-buffer/mount-test")
+            std::fs::canonicalize(
+                cache_path(&engine, &new)
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+            )
+            .unwrap(),
+            std::fs::canonicalize(&other).unwrap()
+        );
+        assert!(
+            cache_path(&engine, &new).ends_with(Path::new("Cloudloom-buffer").join("mount-test"))
         );
         let metadata = cache_path(&engine, &old).join("vfsMeta/storage");
         std::fs::create_dir_all(&metadata).unwrap();
