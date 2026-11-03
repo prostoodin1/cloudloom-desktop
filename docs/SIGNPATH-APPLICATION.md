@@ -1,6 +1,6 @@
-# Prepared application for free Windows signing
+# Application for free Windows signing
 
-Status: draft for owner approval; not submitted and not approved.
+Status: submitted to SignPath Foundation on 2026-11-03 with owner-approved contact details and consent. The site confirmed receipt. Awaiting review; not approved and no publisher certificate is configured. Marketing communications were left unchecked.
 
 Project: Cloudloom
 
@@ -20,4 +20,4 @@ Requested service: free Windows Authenticode signing under the SignPath Foundati
 
 Code signing policy: https://github.com/prostoodin1/cloudloom-desktop/blob/main/docs/CODE-SIGNING.md
 
-Before submission: owner confirms the contact address, the proposed approver, two-factor authentication and the Foundation terms. After approval, configure the assigned organization/project/policy IDs and API token through the service and GitHub encrypted settings. Do not publish personal contact information or tokens in this draft.
+The owner approved submission and the Foundation terms. Contact information remains private. Two-factor authentication must be enabled for repository and signing-service access before connecting the signing account. After approval, configure the assigned organization/project/policy IDs and API token through the service and GitHub encrypted settings. Do not publish personal contact information or tokens in this public document.

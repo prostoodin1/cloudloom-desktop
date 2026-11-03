@@ -6,7 +6,7 @@ Cloudloom source and release engineering are maintained at [prostoodin1/cloudloo
 
 Automatic-update packages are signed with the project's existing updater key. These signatures verify package integrity and the release version. They do not provide Windows Authenticode or Apple Developer ID trust.
 
-Windows publisher signing through the free SignPath Foundation program is being prepared. No Foundation approval, certificate, subscription or trusted publisher signature is claimed until it has actually been granted and the resulting binaries have been verified. [Foundation conditions](https://signpath.org/terms), [application](https://signpath.org/apply).
+The application for Windows publisher signing through the free SignPath Foundation program was submitted on 2026-11-03 and is awaiting review. Marketing communications were not selected and no paid subscription was requested. No Foundation approval, certificate, subscription or trusted publisher signature is claimed until it has actually been granted and the resulting binaries have been verified. [Foundation conditions](https://signpath.org/terms), [application](https://signpath.org/apply).
 
 macOS packages have an ad-hoc signature for bundle integrity. They are not Developer ID signed or notarized. Apple requires an eligible Developer Program membership for Developer ID distribution. Cloudloom will not install a private root certificate, remove quarantine attributes or disable operating-system security to hide warnings. [Apple Developer ID](https://developer.apple.com/help/account/certificates/create-developer-id-certificates/).
 
