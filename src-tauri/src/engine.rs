@@ -642,7 +642,19 @@ pub async fn connect_profile(
     if !allowed.contains(&request.provider.as_str()) {
         return Err("Провайдер не поддерживается".into());
     }
-    if request.provider == "delivery" {
+    let delivery_webdav = if request.provider == "delivery" {
+        crate::delivery::is_webdav(request.options.get("url").map(String::as_str).unwrap_or(""))
+            .await?
+    } else {
+        false
+    };
+    if delivery_webdav {
+        let url = crate::delivery::site_url(
+            request.options.get("url").map(String::as_str).unwrap_or(""),
+        )?;
+        request.options.insert("url".into(), url.to_string());
+    }
+    if request.provider == "delivery" && !delivery_webdav {
         let url = crate::delivery::site_url(
             request.options.get("url").map(String::as_str).unwrap_or(""),
         )?;

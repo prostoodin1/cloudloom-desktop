@@ -53,6 +53,7 @@ async fn real_windows_mount_read_write_readonly_and_appearance() {
         auto_mount: true,
         service_icon: true,
         cache_directory: None,
+        delivery_webdav_url: None,
     };
     {
         let mut inner = mounts.inner.lock().await;

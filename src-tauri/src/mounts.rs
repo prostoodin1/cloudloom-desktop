@@ -14,6 +14,8 @@ use tokio::process::Child;
 pub(crate) fn winfsp_installed() -> bool {
     platform::installed()
 }
+#[path = "mount_cache.rs"]
+mod cache_cleanup;
 #[path = "mount_icons.rs"]
 mod icons;
 #[cfg(all(test, windows))]
@@ -54,6 +56,8 @@ pub(crate) struct Options {
     pub service_icon: bool,
     #[serde(default)]
     pub cache_directory: Option<String>,
+    #[serde(default)]
+    pub delivery_webdav_url: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Appearance {
@@ -194,7 +198,9 @@ fn cache_path(engine: &Engine, options: &Options) -> PathBuf {
         .join(&options.id)
 }
 fn check_cache_change(engine: &Engine, old: &Options, new: &Options) -> Result<(), String> {
-    if cache_path(engine, old) != cache_path(engine, new) {
+    if cache_path(engine, old) != cache_path(engine, new)
+        || old.delivery_webdav_url != new.delivery_webdav_url
+    {
         if let Some(path) = &old.cache_directory {
             if !Path::new(path).is_dir() {
                 return Err("Подключите накопитель со старым буфером: сначала нужно проверить неотправленные файлы".into());
@@ -354,6 +360,10 @@ impl Mounts {
         prepare_cache_directory(&mut checked_options)?;
         let cache = cache_path(engine, &checked_options);
         std::fs::create_dir_all(&cache).map_err(|_| "Не удалось создать кэш диска")?;
+        if dirty_files(&cache.join("vfsMeta"))? == 0 {
+            let _ = cache_cleanup::clean(&cache);
+        }
+        cache_cleanup::staging(&cache.join("delivery-uploads"))?;
         if options.read_only && dirty_files(&cache.join("vfsMeta"))? > 0 {
             return Err("В кэше есть неотправленные изменения. Сначала подключите этот профиль с записью для восстановления отправки".into());
         }
@@ -367,10 +377,14 @@ impl Mounts {
             uuid::Uuid::new_v4().simple(),
             uuid::Uuid::new_v4().simple()
         );
-        let bridge = if let Some(client) = engine.delivery_client(&options.id)? {
+        let delivery = engine.delivery_client(&options.id)?;
+        let bridge = if let Some(client) = delivery
+            .as_ref()
+            .filter(|_| options.delivery_webdav_url.is_none())
+        {
             Some(
                 crate::delivery_dav::Bridge::start(
-                    client,
+                    client.clone(),
                     cache.join("delivery-uploads"),
                     options.read_only,
                 )
@@ -380,6 +394,11 @@ impl Mounts {
             None
         };
         let mut command = engine.command(&options.id);
+        if let (Some(client), Some(url)) = (&delivery, &options.delivery_webdav_url) {
+            client
+                .configure_webdav(engine.command(&options.id), &mut command, url)
+                .await?;
+        }
         if let Some(bridge) = &bridge {
             command
                 .env("RCLONE_CONFIG_STORAGE_TYPE", "webdav")
@@ -449,7 +468,7 @@ impl Mounts {
         }
         let fs = remote(&profile, "")?;
         self.active.fetch_add(1, Ordering::SeqCst);
-        let result = session.rc("mount/mount", json!({"fs":fs,"mountPoint":format!("{}:", options.letter),"mountOpt":{"NetworkMode":true,"VolumeName":options.name},"vfsOpt":{"CacheMode":3,"ReadOnly":options.read_only,"CacheMaxSize":10_737_418_240u64,"CacheMinFreeSpace":1_073_741_824u64,"WriteBack":2_000_000_000u64,"DirCacheTime":60_000_000_000u64,"PollInterval":30_000_000_000u64}})).await;
+        let result = session.rc("mount/mount", json!({"fs":fs,"mountPoint":format!("{}:", options.letter),"mountOpt":{"NetworkMode":true,"VolumeName":options.name},"vfsOpt":{"CacheMode":3,"ReadOnly":options.read_only,"CacheMaxSize":10_737_418_240u64,"CacheMaxAge":1_000_000_000u64,"CachePollInterval":2_000_000_000u64,"CacheMinFreeSpace":1_073_741_824u64,"WriteBack":2_000_000_000u64,"DirCacheTime":15_000_000_000u64,"PollInterval":30_000_000_000u64}})).await;
         if let Err(error) = result {
             self.active.fetch_sub(1, Ordering::SeqCst);
             return Err(error);
@@ -605,7 +624,7 @@ pub(crate) async fn explorer_disks(
                 error = Some("Диск остановлен. Кэш сохранён; подключите повторно для отправки оставшихся изменений".into());
             } else {
                 error = session.warning.clone();
-                match session.pending(false).await {
+                match session.pending(true).await {
                     Ok(n) => pending = Some(n),
                     Err(e) => error = Some(e),
                 }
@@ -698,6 +717,34 @@ pub(crate) async fn disconnect_explorer(
     let _lifecycle = mounts.lifecycle.lock().await;
     stop(&engine, &mounts, id).await
 }
+#[tauri::command]
+pub(crate) async fn clear_explorer_cache(
+    engine: State<'_, Engine>,
+    mounts: State<'_, Mounts>,
+    id: String,
+) -> Result<u64, String> {
+    let _lifecycle = mounts.lifecycle.lock().await;
+    engine.profile(&id)?;
+    let inner = mounts.inner.lock().await;
+    if inner.sessions.contains_key(&id) {
+        return Err("Сначала отключите диск. Во время работы завершённые файлы буфера очищаются автоматически".into());
+    }
+    let cache = inner
+        .records
+        .iter()
+        .find(|r| r.options.id == id)
+        .map(|r| cache_path(&engine, &r.options))
+        .unwrap_or_else(|| engine.directory.join("explorer-cache").join(&id));
+    if dirty_files(&cache.join("vfsMeta"))? > 0 {
+        return Err(
+            "В буфере есть неотправленные файлы. Подключите диск с записью и дождитесь отправки"
+                .into(),
+        );
+    }
+    let removed = cache_cleanup::clean(&cache)?;
+    cache_cleanup::staging(&cache.join("delivery-uploads"))?;
+    Ok(removed)
+}
 async fn stop(engine: &Engine, mounts: &Mounts, id: String) -> Result<(), String> {
     let mut inner = mounts.inner.lock().await;
     let session = inner.sessions.get(&id).ok_or("Диск не подключён")?;
@@ -736,6 +783,12 @@ async fn stop(engine: &Engine, mounts: &Mounts, id: String) -> Result<(), String
     if late? > 0 {
         return Err("Диск отключён, но появились поздние изменения. Они сохранены в кэше: подключите тот же профиль с записью для их отправки".into());
     }
+    if let Err(error) = cache_cleanup::clean(&session.cache) {
+        inner
+            .errors
+            .insert(id.clone(), format!("Диск отключён. {error}"));
+    }
+    let _ = cache_cleanup::staging(&session.cache.join("delivery-uploads"));
     Ok(())
 }
 #[tauri::command]
@@ -786,6 +839,7 @@ pub(crate) fn open_winfsp_help() -> Result<(), String> {
 pub(crate) async fn verify_delivery_mount(
     client: std::sync::Arc<crate::delivery::Client>,
     root: PathBuf,
+    fail_ack: bool,
 ) {
     std::fs::create_dir_all(&root).unwrap();
     let engine = Engine::test_delivery_mount(client.clone(), root);
@@ -801,6 +855,7 @@ pub(crate) async fn verify_delivery_mount(
         auto_mount: false,
         service_icon: false,
         cache_directory: Some(engine.directory.to_string_lossy().into_owned()),
+        delivery_webdav_url: None,
     };
     {
         let mut inner = mounts.inner.lock().await;
@@ -843,6 +898,21 @@ pub(crate) async fn verify_delivery_mount(
             .await
             .unwrap(),
         b"real WinFsp Delivery bridge"
+    );
+    let cache = mounts.inner.lock().await.sessions[&options.id]
+        .cache
+        .clone();
+    let mut cleaned = false;
+    for _ in 0..60 {
+        if !cache_cleanup::contains(&cache, "api-mounted.txt") {
+            cleaned = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(
+        cleaned,
+        "A completed, closed upload must leave the local buffer automatically"
     );
     tokio::fs::rename(drive.join("api-mounted.txt"), drive.join("renamed.txt"))
         .await
@@ -889,8 +959,59 @@ pub(crate) async fn verify_delivery_mount(
             .await
             .is_err()
     );
-    stop(&engine, &mounts, options.id).await.unwrap();
+    stop(&engine, &mounts, options.id.clone()).await.unwrap();
     client.delete("remote-seed.txt", false).await.unwrap();
+    if fail_ack {
+        {
+            let mut inner = mounts.inner.lock().await;
+            inner.records[0].options = options.clone();
+            mounts.start(&engine, &mut inner, &options).await.unwrap();
+        }
+        tokio::fs::write(
+            drive.join("phantom.mp4"),
+            b"unsent video must survive cache eviction",
+        )
+        .await
+        .unwrap();
+        let mut failed = false;
+        for _ in 0..120 {
+            let inner = mounts.inner.lock().await;
+            let value = inner.sessions[&options.id]
+                .rc("core/stats", json!({}))
+                .await
+                .unwrap();
+            if value["errors"].as_u64().unwrap_or(0) > 0 {
+                failed = true;
+                break;
+            }
+            drop(inner);
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        assert!(
+            failed,
+            "False HTTP success must become a visible upload failure"
+        );
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        assert!(
+            cache_cleanup::contains(&cache, "phantom.mp4"),
+            "Automatic cleanup must preserve an unconfirmed upload"
+        );
+        assert!(dirty_files(&cache.join("vfsMeta")).unwrap() > 0);
+        assert!(
+            stop(&engine, &mounts, options.id.clone()).await.is_err(),
+            "Pending upload must block disconnect"
+        );
+        // Fixture-only crash teardown: terminate this test's child, preserving its
+        // dirty cache until the assertions above have completed. No user mount is touched.
+        let mut inner = mounts.inner.lock().await;
+        let mut session = inner.sessions.remove(&options.id).unwrap();
+        session.child.kill().await.unwrap();
+        drop(session);
+        if let Some(a) = &inner.records[0].appearance {
+            platform_cleanup(a).unwrap();
+        }
+        mounts.active.store(0, Ordering::SeqCst);
+    }
 }
 
 #[cfg(test)]
@@ -962,6 +1083,7 @@ mod tests {
             auto_mount: false,
             service_icon: true,
             cache_directory: None,
+            delivery_webdav_url: None,
         };
         assert!(validate(&o).is_ok());
         for letter in ["C", "z", "Z:", "Z:/foo", "\\\\host\\share", "A"] {

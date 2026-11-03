@@ -4,7 +4,7 @@ import { call, desktop, service, type Profile } from './api'
 import { open as chooseFolder } from '@tauri-apps/plugin-dialog'
 import './explorer-disks.css'
 
-export interface DiskOptions { id: string; letter: string; name: string; readOnly: boolean; autoMount: boolean; serviceIcon: boolean; cacheDirectory?: string | null }
+export interface DiskOptions { id: string; letter: string; name: string; readOnly: boolean; autoMount: boolean; serviceIcon: boolean; cacheDirectory?: string | null; deliveryWebdavUrl?: string | null }
 interface Disk { options: DiskOptions; mounted: boolean; pending: number | null; error: string | null }
 interface Overview { windows: boolean; winFsp: boolean; letters: string[]; disks: Disk[]; defaultCacheDirectory?: string }
 function defaults(profile: Profile, overview: Overview): DiskOptions {
@@ -19,6 +19,7 @@ export function ExplorerDisks({ profiles, open, onClose, ref }: { profiles: Prof
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [installation, setInstallation] = useState('')
+  const [cacheStatus, setCacheStatus] = useState('')
   const [restartRequired, setRestartRequired] = useState(false)
   const lock = useRef(false)
   const polling = useRef(false)
@@ -84,6 +85,15 @@ export function ExplorerDisks({ profiles, open, onClose, ref }: { profiles: Prof
     } catch (e) { setError(String(e)) }
     finally { lock.current = false; setBusy(false) }
   }
+  const cleanCache = async () => {
+    if (!form || lock.current || mounted) return
+    lock.current = true; setBusy(true); setError(''); setCacheStatus('')
+    try {
+      const removed = await call<number>('clear_explorer_cache', { id: form.id })
+      setCacheStatus(`Буфер проверен. Удалено завершённых файлов: ${removed}. Неотправленные и неизвестные файлы сохраняются.`)
+    } catch (e) { setError(String(e)) }
+    finally { lock.current = false; setBusy(false) }
+  }
   const enableWriting = async () => {
     if (!form || !disk?.mounted || !disk.options.readOnly || lock.current) return
     if (!window.confirm('Включить запись на этом диске? Закройте использующие его файлы. Диск переподключится; изменение и удаление в Проводнике будут менять файлы в облаке. Права сервера сохраняются.')) return
@@ -117,11 +127,11 @@ export function ExplorerDisks({ profiles, open, onClose, ref }: { profiles: Prof
     {!overview && !error && <p role="status"><LoaderCircle className="spin" size={17}/>Проверяем диски…</p>}
     {!profiles.length && <p>Сначала подключите профиль облака или локальной папки в главном меню.</p>}
     {profile && form && overview && <>
-      <label className="disk-field">Профиль<select value={profile.id} disabled={busy} onChange={e => { const selected = profiles.find(p => p.id === e.target.value); if (selected) { setForm(defaults(selected, overview)); setError('') } }}>{profiles.map(p => <option key={p.id} value={p.id}>{p.name} · {service(p.provider).name}</option>)}</select></label>
-      {profile.transport === 'sftpgo-api' && <div className="explorer-notice">Delivery подключается с сохранённым входом. Отдельный адрес WebDAV не нужен. Доступ к файлам определяется правами вашего аккаунта.</div>}
+      <label className="disk-field">Профиль<select value={profile.id} disabled={busy} onChange={e => { const selected = profiles.find(p => p.id === e.target.value); if (selected) { setForm(defaults(selected, overview)); setError(''); setCacheStatus('') } }}>{profiles.map(p => <option key={p.id} value={p.id}>{p.name} · {service(p.provider).name}</option>)}</select></label>
+      {profile.transport === 'sftpgo-api' && <div className="explorer-notice"><p>Delivery подключается с сохранённым входом. Доступ к файлам определяется правами вашего аккаунта.</p><label className="disk-field">Адрес WebDAV Delivery (необязательно)<input type="url" value={form.deliveryWebdavUrl ?? ''} placeholder="https://files.example.com/" disabled={busy || mounted} onChange={e => set({ deliveryWebdavUrl: e.target.value.trim() || null })}/></label><p>Если администратор дал отдельный адрес WebDAV, вставьте его сюда для прямой работы Проводника с сервером. Будут использованы сохранённые логин и пароль этого профиля; имя сервера должно совпадать с сайтом Delivery. Пустое поле — подключение через API.</p></div>}
       <div className="disk-fields"><label className="disk-field">Буква диска<select value={form.letter} disabled={busy || mounted} onChange={e => set({ letter: e.target.value })}>{[...new Set([form.letter, ...overview.letters])].filter(Boolean).map(letter => <option key={letter} value={letter}>{letter}:</option>)}{!form.letter && <option value="">Нет свободных букв</option>}</select></label><label className="disk-field">Название в Проводнике<input maxLength={32} value={form.name} disabled={busy || mounted} onChange={e => set({ name: e.target.value })}/></label></div>
       <div className="disk-checkboxes"><label><input type="checkbox" checked={form.serviceIcon} disabled={busy || mounted} onChange={e => set({ serviceIcon: e.target.checked })}/>Значок сервиса (логотип или цветной буквенный значок)</label><label><input type="checkbox" checked={form.readOnly} disabled={busy || mounted} onChange={e => set({ readOnly: e.target.checked })}/>Только чтение — без изменения и удаления облачных файлов</label><label><input type="checkbox" checked={form.autoMount} disabled={busy || mounted} onChange={e => set({ autoMount: e.target.checked })}/>Подключать при запуске Cloudloom</label></div>
-      <section className="disk-buffer" aria-label="Буфер передачи"><label className="disk-field">Папка буфера передачи<input readOnly value={form.cacheDirectory || overview.defaultCacheDirectory || 'По умолчанию — папка данных Cloudloom на этом компьютере'}/></label><div className="disk-buffer-actions"><button className="button subtle" disabled={busy || mounted} onClick={() => { void chooseCache() }}>Выбрать папку…</button><button className="button subtle" disabled={busy || mounted || !form.cacheDirectory} onClick={() => set({ cacheDirectory: null })}>По умолчанию</button></div><p>Используется для чтения и отправки файлов через Проводник, включая Delivery. Можно выбрать локальный диск или внешний накопитель. Для смены папки отключите диск и дождитесь отправки файлов. Старый буфер автоматически не переносится и не удаляется. Обычные передачи внутри Cloudloom идут напрямую между файлом и облаком.</p></section>
+      <section className="disk-buffer" aria-label="Буфер передачи"><label className="disk-field">Папка буфера передачи<input readOnly value={form.cacheDirectory || overview.defaultCacheDirectory || 'По умолчанию — папка данных Cloudloom на этом компьютере'}/></label><div className="disk-buffer-actions"><button className="button subtle" disabled={busy || mounted} onClick={() => { void chooseCache() }}>Выбрать папку…</button><button className="button subtle" disabled={busy || mounted || !form.cacheDirectory} onClick={() => set({ cacheDirectory: null })}>По умолчанию</button><button className="button subtle" disabled={busy || mounted} onClick={() => { void cleanCache() }}>Очистить буфер</button></div>{cacheStatus && <p role="status">{cacheStatus}</p>}<p>Используется для чтения и отправки файлов через Проводник, включая Delivery. Можно выбрать локальный диск или внешний накопитель. Для смены папки отключите диск и дождитесь отправки файлов. Завершённые и закрытые файлы буфера автоматически удаляются через несколько секунд. Неотправленные файлы сохраняются. Обычные передачи внутри Cloudloom идут напрямую между файлом и облаком.</p></section>
       {form.readOnly && <p className="explorer-notice"><strong>Только чтение: загрузка на этот диск запрещена.</strong> Windows покажет «Диск защищён от записи». {mounted ? 'Нажмите «Включить запись», чтобы разрешить загрузку.' : 'Для загрузки файлов снимите флажок «Только чтение» перед подключением.'}</p>}
       {!form.readOnly && <p className="explorer-notice">Запись включена: изменение или удаление в Проводнике изменит файлы в облаке. Отправка начинается после закрытия файла. Перед отключением закройте использующие диск программы и дождитесь отправки.</p>}
       <p className="explorer-cache">Диск работает, пока открыт Cloudloom. Кэш хранится локально без дополнительного шифрования: чтение по частям, запись через кэш. Целевой размер — 10 ГБ, резерв — 1 ГБ; открытые и неотправленные файлы могут превысить лимит. Это не полностью офлайн-копия и не защита от конфликтов между программами.</p>

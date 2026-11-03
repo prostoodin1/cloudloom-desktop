@@ -252,7 +252,17 @@ async fn dispatch(ctx: &Context, request: Request) -> Result<Response, StatusCod
             Ok(builder.body(data).unwrap())
         }
         "MKCOL" => {
-            ctx.client.mkdir(&path).await.map_err(api_error)?;
+            // WebDAV requires 405 for an existing collection. SFTPGo's user API
+            // reports mkdir(existing) as a server error, which rclone cannot treat as success.
+            if ctx.client.stat(&path).await.is_ok() {
+                return Err(StatusCode::METHOD_NOT_ALLOWED);
+            }
+            if let Err(error) = ctx.client.mkdir(&path).await {
+                if ctx.client.stat(&path).await.is_ok() {
+                    return Err(StatusCode::METHOD_NOT_ALLOWED);
+                }
+                return Err(api_error(error));
+            }
             Ok(response(StatusCode::CREATED, Body::empty()))
         }
         "DELETE" => {
@@ -327,7 +337,15 @@ async fn dispatch(ctx: &Context, request: Request) -> Result<Response, StatusCod
             ctx.client
                 .upload(&path, &temporary.0, true, Arc::new(AtomicU64::new(0)))
                 .await
-                .map_err(api_error)?;
+                // Missing remote file after a PUT is a failed upload, not a
+                // WebDAV "file disappeared" event. Keep rclone's pending copy.
+                .map_err(|error| {
+                    if error.contains("запретил") {
+                        StatusCode::FORBIDDEN
+                    } else {
+                        StatusCode::BAD_GATEWAY
+                    }
+                })?;
             Ok(response(StatusCode::CREATED, Body::empty()))
         }
         _ => Err(StatusCode::METHOD_NOT_ALLOWED),

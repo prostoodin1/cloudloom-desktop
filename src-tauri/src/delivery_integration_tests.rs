@@ -139,7 +139,16 @@ fn fixture() -> Server {
                         }
                     }
                     ("POST", "files/upload") => {
-                        if path == "/retry-once.txt" && retry_uploads == 0 {
+                        if path == "/phantom.mp4" {
+                            status = 201; // Broken proxy/server: ACK without storing anything.
+                        } else if path == "/html-response.mp4" {
+                            status = 200;
+                            response =
+                                b"<html>Login page, not an upload confirmation</html>".to_vec();
+                        } else if path == "/corrupted.mp4" {
+                            files.insert(path.into(), Some(vec![0; body.len()]));
+                            status = 201;
+                        } else if path == "/retry-once.txt" && retry_uploads == 0 {
                             retry_uploads += 1;
                             status = 503;
                         } else {
@@ -250,7 +259,7 @@ async fn upload_deadline_tracks_inactivity_instead_of_total_duration() {
 }
 
 #[tokio::test]
-async fn explorer_delivery_bridge_real_rclone_roundtrip() {
+async fn false_upload_acknowledgements_never_complete_transfers() {
     let server = fixture();
     let mut client = Client::new(Credentials {
         site: "https://fixture.invalid/".into(),
@@ -259,6 +268,71 @@ async fn explorer_delivery_bridge_real_rclone_roundtrip() {
     })
     .unwrap();
     client.base = tauri::Url::parse(&server.url).unwrap();
+    let client = Arc::new(client);
+    let root =
+        std::env::temp_dir().join(format!("cloudloom-false-ack-test-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    let source = root.join("video.mp4");
+    std::fs::write(&source, b"ftyp: regression video bytes").unwrap();
+    for name in ["phantom.mp4", "html-response.mp4", "corrupted.mp4"] {
+        assert!(
+            client
+                .upload(name, &source, true, Arc::new(AtomicU64::new(0)))
+                .await
+                .is_err(),
+            "A server ACK without the correct remote file must not complete an upload"
+        );
+        assert!(source.is_file());
+    }
+    let bridge = crate::delivery_dav::Bridge::start(client.clone(), root.join("uploads"), false)
+        .await
+        .unwrap();
+    let response = Http::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .put(format!("{}phantom.mp4", bridge.url))
+        .bearer_auth(&bridge.secret)
+        .body("video bytes")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_GATEWAY,
+        "rclone must receive a failure, retaining its pending VFS copy"
+    );
+    assert_eq!(
+        std::fs::read_dir(root.join("uploads")).unwrap().count(),
+        0,
+        "Discard only the duplicate HTTP staging file, never the VFS/source file"
+    );
+    drop(bridge);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn explorer_delivery_bridge_real_rclone_roundtrip() {
+    let server = fixture();
+    let real = std::env::var("CLOUDLOOM_TEST_SFTPGO_URL").ok();
+    let mut client = Client::new(Credentials {
+        site: "https://fixture.invalid/".into(),
+        user: if real.is_some() {
+            "cloudloom-test"
+        } else {
+            "fixture"
+        }
+        .into(),
+        password: if real.is_some() {
+            "fixture-pass-not-a-user-secret"
+        } else {
+            "fixture-only"
+        }
+        .into(),
+    })
+    .unwrap();
+    client.base = tauri::Url::parse(real.as_deref().unwrap_or(&server.url)).unwrap();
+    assert_eq!(client.base.host_str(), Some("127.0.0.1"));
     let client = Arc::new(client);
     let root = std::env::temp_dir().join(format!("cloudloom-dav-test-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
@@ -336,12 +410,14 @@ async fn explorer_delivery_bridge_real_rclone_roundtrip() {
     let listed: Value =
         serde_json::from_slice(&run(vec!["lsjson".into(), "storage:folder".into()]).await).unwrap();
     assert_eq!(listed[0]["Name"], "тест & 100%20.txt");
-    assert!(
-        listed[0]["ModTime"]
-            .as_str()
-            .unwrap()
-            .starts_with("2026-10-10")
-    );
+    if real.is_none() {
+        assert!(
+            listed[0]["ModTime"]
+                .as_str()
+                .unwrap()
+                .starts_with("2026-10-10")
+        );
+    }
     let url = {
         let mut url = tauri::Url::parse(&bridge.url).unwrap();
         url.path_segments_mut()
@@ -430,7 +506,8 @@ async fn explorer_delivery_bridge_real_rclone_roundtrip() {
     assert_eq!(std::fs::read_dir(root.join("uploads")).unwrap().count(), 0);
     #[cfg(windows)]
     if std::env::var("CLOUDLOOM_TEST_MOUNTS").as_deref() == Ok("1") {
-        crate::mounts::verify_delivery_mount(client.clone(), root.join("mount")).await;
+        crate::mounts::verify_delivery_mount(client.clone(), root.join("mount"), real.is_none())
+            .await;
     }
     let old_url = bridge.url.clone();
     drop(bridge);

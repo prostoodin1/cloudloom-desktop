@@ -82,6 +82,7 @@ pub fn run() {
             mounts::explorer_disks,
             mounts::connect_explorer,
             mounts::disconnect_explorer,
+            mounts::clear_explorer_cache,
             mounts::open_explorer,
             mounts::open_winfsp_help,
             winfsp::install_winfsp,

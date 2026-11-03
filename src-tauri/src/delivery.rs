@@ -74,6 +74,23 @@ fn status_error(status: StatusCode) -> String {
 fn network_error(_: reqwest::Error) -> String {
     "Не удалось связаться с Delivery. Проверьте адрес, сеть и HTTPS-сертификат сервера.".into()
 }
+pub(crate) async fn is_webdav(input: &str) -> Result<bool, String> {
+    let url = site_url(input)?;
+    let response = Http::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(12))
+        .build()
+        .map_err(|_| "Не удалось проверить адрес Delivery")?
+        .get(url)
+        .send()
+        .await
+        .map_err(network_error)?;
+    Ok(response
+        .headers()
+        .get("www-authenticate")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.to_ascii_lowercase().contains("sftpgo webdav")))
+}
 async fn checked(response: Response) -> Result<Response, String> {
     if response.status().is_success() {
         Ok(response)
@@ -100,6 +117,66 @@ pub(crate) struct Client {
     token: tokio::sync::Mutex<Option<String>>,
 }
 impl Client {
+    pub(crate) async fn configure_webdav(
+        &self,
+        mut obscure: tokio::process::Command,
+        command: &mut tokio::process::Command,
+        input: &str,
+    ) -> Result<(), String> {
+        let url = site_url(input)?;
+        if url.host_str() != self.base.host_str() {
+            return Err("WebDAV должен принадлежать тому же серверу Delivery. Для другого сервера создайте отдельный профиль".into());
+        }
+        if !is_webdav(input).await? {
+            return Err(
+                "Этот адрес не подтвердил WebDAV SFTPGo. Проверьте адрес у администратора".into(),
+            );
+        }
+        if self.credentials.password.contains(['\n', '\r']) {
+            return Err("Пароль с переводами строк не поддерживается WebDAV-движком".into());
+        }
+        use std::process::Stdio;
+        obscure
+            .args(["obscure", "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        #[cfg(windows)]
+        obscure.creation_flags(0x08000000);
+        let mut child = obscure
+            .spawn()
+            .map_err(|_| "Не удалось подготовить вход WebDAV")?;
+        let mut input = child
+            .stdin
+            .take()
+            .ok_or("Не удалось открыть защищённый канал входа")?;
+        input
+            .write_all(self.credentials.password.as_bytes())
+            .await
+            .map_err(|_| "Не удалось передать пароль движку")?;
+        input
+            .write_all(b"\n")
+            .await
+            .map_err(|_| "Не удалось передать пароль движку")?;
+        drop(input);
+        let output = child
+            .wait_with_output()
+            .await
+            .map_err(|_| "Не удалось подготовить WebDAV")?;
+        if !output.status.success() {
+            return Err("Не удалось подготовить WebDAV".into());
+        }
+        let obscured = String::from_utf8(output.stdout).map_err(|_| "Неверный ответ движка")?;
+        command
+            .env("RCLONE_CONFIG_STORAGE_TYPE", "webdav")
+            .env("RCLONE_CONFIG_STORAGE_URL", url.as_str())
+            .env("RCLONE_CONFIG_STORAGE_VENDOR", "other")
+            .env("RCLONE_CONFIG_STORAGE_USER", &self.credentials.user)
+            .env("RCLONE_CONFIG_STORAGE_PASS", obscured.trim())
+            .env("RCLONE_CONFIG_STORAGE_BEARER_TOKEN", "");
+        Ok(())
+    }
     pub fn new(credentials: Credentials) -> Result<Self, String> {
         let base = site_url(&credentials.site)?;
         let http = Http::builder()
@@ -489,7 +566,8 @@ impl Client {
                 if !self.matches_local(&temporary, local).await? {
                     return Err("Проверка загруженного файла не прошла. Повторите передачу".into());
                 }
-                self.rename(&temporary, &path).await
+                self.rename(&temporary, &path).await?;
+                self.confirm_upload(&path, local).await
             }
             .await;
             if result.is_err() {
@@ -497,7 +575,63 @@ impl Client {
             }
             return result;
         }
-        self.upload_inner(&path, local, progress).await
+        self.upload_inner(&path, local, progress).await?;
+        self.confirm_upload(&path, local).await
+    }
+
+    // A local VFS copy is not evidence of a cloud upload. Read fresh server
+    // metadata and bounded samples before allowing rclone to mark it clean.
+    async fn confirm_upload(&self, path: &str, local: &Path) -> Result<(), String> {
+        let mut file = tokio::fs::File::open(local)
+            .await
+            .map_err(|_| "Исходный файл недоступен для проверки")?;
+        let size = file
+            .metadata()
+            .await
+            .map_err(|_| "Не удалось проверить размер файла")?
+            .len();
+        let remote = self.stat(path).await?;
+        if remote["IsDir"] != false || remote["Size"].as_u64() != Some(size) {
+            return Err("Delivery не подтвердил файл и его размер на сервере. Передача не завершена; исходный файл/буфер сохранён".into());
+        }
+        if size == 0 {
+            return Ok(());
+        }
+        if size <= 128 * 1024 {
+            return if self.matches_local(path, local).await? {
+                Ok(())
+            } else {
+                Err("Файл на Delivery не прошёл проверку содержимого; буфер сохранён".into())
+            };
+        }
+        use tokio::io::AsyncSeekExt;
+        let chunk = size.min(64 * 1024);
+        for start in [0, size - chunk] {
+            file.seek(std::io::SeekFrom::Start(start))
+                .await
+                .map_err(|_| "Не удалось проверить исходный файл")?;
+            let mut expected = vec![0; chunk as usize];
+            file.read_exact(&mut expected)
+                .await
+                .map_err(|_| "Исходный файл изменился при проверке")?;
+            let mut response = self.range(path, start, start + chunk - 1, size).await?;
+            let mut received = 0usize;
+            while let Some(bytes) = response.chunk().await.map_err(network_error)? {
+                if received + bytes.len() > expected.len()
+                    || expected[received..received + bytes.len()] != bytes[..]
+                {
+                    return Err("Содержимое файла на Delivery не прошло проверку. Передача не завершена; буфер сохранён".into());
+                }
+                received += bytes.len();
+            }
+            if received != expected.len() {
+                return Err("Delivery передал неполный файл при проверке загрузки".into());
+            }
+            if size <= chunk {
+                break;
+            }
+        }
+        Ok(())
     }
 
     // Compare bytes with bounded memory; equal size alone is not sufficient.
@@ -578,7 +712,8 @@ impl Client {
             let response =
                 upload_with_idle_timeout(request, progress.clone(), Duration::from_secs(120)).await;
             let retryable = match response {
-                Ok(response) if response.status().is_success() => return Ok(()),
+                Ok(response) if response.status() == StatusCode::CREATED => return Ok(()),
+                Ok(response) if response.status().is_success() => return Err("Delivery вернул ответ без подтверждения загрузки (ожидался HTTP 201). Файл не отмечен отправленным".into()),
                 Ok(response) if response.status() == StatusCode::UNAUTHORIZED => {
                     last_error = status_error(response.status());
                     let _ = self.login(None).await;
