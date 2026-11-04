@@ -1,4 +1,4 @@
-export const releaseName = 'Pine'
+export const releaseName = 'Quartz'
 export interface SetupField { key: string; label: string; secret?: boolean; required?: boolean; placeholder?: string; advanced?: boolean }
 export interface SetupGuide { intro: string; steps: string[]; note?: string; fields?: SetupField[] }
 export const guides: Record<string, SetupGuide> = {

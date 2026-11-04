@@ -450,8 +450,37 @@ impl Engine {
         std::fs::write(&temporary, data).map_err(err)?;
         std::fs::rename(temporary, self.directory.join("profiles.json")).map_err(err)
     }
+    fn download_totals(&self) -> Result<HashMap<String, u64>, String> {
+        let path = self.directory.join("download-totals.json");
+        match std::fs::read(path) {
+            Ok(data) => serde_json::from_slice(&data).map_err(err),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+            Err(error) => Err(err(error)),
+        }
+    }
+    // Called with the task lock held, so concurrent completions cannot lose a count.
+    fn record_download(&self, bytes: u64) -> Result<(), String> {
+        let mut totals = self.download_totals()?;
+        let month = chrono::Local::now().format("%Y-%m").to_string();
+        let total = totals.entry(month).or_default();
+        *total = total.saturating_add(bytes);
+        let destination = self.directory.join("download-totals.json");
+        let temporary = destination.with_extension("json.tmp");
+        std::fs::write(&temporary, serde_json::to_vec(&totals).map_err(err)?).map_err(err)?;
+        std::fs::rename(temporary, destination).map_err(err)
+    }
+
     fn emit_task(&self, app: &AppHandle, task: Task) {
         if let Ok(mut tasks) = self.tasks.lock() {
+            if task.direction == "download"
+                && task.status == "complete"
+                && task.bytes > 0
+                && !tasks
+                    .iter()
+                    .any(|previous| previous.id == task.id && previous.status == "complete")
+            {
+                let _ = self.record_download(task.bytes);
+            }
             if let Some(current) = tasks.iter_mut().find(|t| t.id == task.id) {
                 *current = task.clone();
             } else {
@@ -508,9 +537,37 @@ pub fn list_profiles(engine: State<'_, Engine>) -> Result<Vec<Profile>, String> 
     Ok(engine.profiles.lock().map_err(err)?.clone())
 }
 #[tauri::command]
+pub fn monthly_download_bytes(engine: State<'_, Engine>) -> Result<u64, String> {
+    let _tasks = engine.tasks.lock().map_err(err)?;
+    let month = chrono::Local::now().format("%Y-%m").to_string();
+    Ok(engine.download_totals()?.get(&month).copied().unwrap_or(0))
+}
+
+#[tauri::command]
 pub fn list_tasks(engine: State<'_, Engine>) -> Result<Vec<Task>, String> {
     Ok(engine.tasks.lock().map_err(err)?.clone())
 }
+#[tauri::command]
+pub fn dismiss_transfer(engine: State<'_, Engine>, id: String) -> Result<(), String> {
+    let mut tasks = engine.tasks.lock().map_err(err)?;
+    let Some(index) = tasks.iter().position(|task| task.id == id) else {
+        return Ok(());
+    };
+    if matches!(tasks[index].status.as_str(), "active" | "queued") {
+        return Err("Передача ещё выполняется".into());
+    }
+    let mut retries = engine.retries.lock().map_err(err)?;
+    let mut updated = tasks.clone();
+    updated.remove(index);
+    let destination = engine.directory.join("tasks.json");
+    let temporary = destination.with_extension("json.tmp");
+    std::fs::write(&temporary, serde_json::to_vec(&updated).map_err(err)?).map_err(err)?;
+    std::fs::rename(temporary, destination).map_err(err)?;
+    *tasks = updated;
+    retries.remove(&id);
+    Ok(())
+}
+
 #[tauri::command]
 pub fn local_is_directory(path: String) -> Result<bool, String> {
     std::fs::metadata(path).map(|m| m.is_dir()).map_err(err)

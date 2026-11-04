@@ -57,6 +57,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             engine::list_profiles,
             engine::list_tasks,
+            engine::monthly_download_bytes,
             engine::connect_profile,
             engine::continue_connect,
             engine::cancel_connect,
@@ -69,6 +70,7 @@ pub fn run() {
             engine::start_transfer,
             engine::retry_transfer,
             engine::cancel_transfer,
+            engine::dismiss_transfer,
             engine::local_is_directory,
             engine::open_service_help,
             preview::storage_usage,
@@ -80,6 +82,7 @@ pub fn run() {
             sharing::revoke_share,
             updates::startup_update,
             mounts::explorer_disks,
+            mounts::explorer_transfers,
             mounts::connect_explorer,
             mounts::disconnect_explorer,
             mounts::clear_explorer_cache,

@@ -33,3 +33,20 @@ main{min-width:0}.topbar{height:81px;display:flex;justify-content:space-between;
 .share-options, .share-result { display: grid; gap: 16px; margin: 20px 0; }
 .share-dialog small { color: var(--muted); line-height: 1.6; }
 .share-dialog footer { margin-top: 24px; }
+
+.transfer-page .transfers { margin: 0 0 16px; }
+.sync-badge { display: inline-flex; flex-shrink: 0; color: var(--muted); }
+.sync-badge.complete { color: var(--accent); }
+.sync-badge.active { color: var(--accent); }
+.sync-badge.error, .sync-badge.retrying { color: var(--danger); }
+.entry-name .sync-badge { align-self: center; }
+.welcome-title .explorer-entry + .explorer-entry { margin-left: 8px; }
+
+.monthly-downloads {
+  display: block;
+  margin-top: 7px;
+  color: var(--muted);
+  opacity: .72;
+  font-size: 9px;
+  text-align: center;
+}

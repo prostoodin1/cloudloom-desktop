@@ -6,11 +6,8 @@ use axum::{
     http::{StatusCode, header},
     response::Response,
 };
-use futures_util::{StreamExt, TryStreamExt};
-use std::{
-    path::PathBuf,
-    sync::{Arc, atomic::AtomicU64},
-};
+use futures_util::StreamExt;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
@@ -19,7 +16,6 @@ struct Context {
     secret: String,
     origin: String,
     read_only: bool,
-    temporary: PathBuf,
     slots: Arc<tokio::sync::Semaphore>,
     stop: CancellationToken,
 }
@@ -36,7 +32,6 @@ impl Drop for Bridge {
 impl Bridge {
     pub async fn start(
         client: Arc<crate::delivery::Client>,
-        temporary: PathBuf,
         read_only: bool,
     ) -> Result<Self, String> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -53,14 +48,12 @@ impl Bridge {
             uuid::Uuid::new_v4().simple(),
             uuid::Uuid::new_v4().simple()
         );
-        std::fs::create_dir_all(&temporary).map_err(|_| "Не удалось создать кэш Delivery")?;
         let stop = CancellationToken::new();
         let context = Context {
             client,
             secret: format!("Bearer {secret}"),
             origin: origin.clone(),
             read_only,
-            temporary,
             slots: Arc::new(tokio::sync::Semaphore::new(8)),
             stop: stop.clone(),
         };
@@ -300,42 +293,19 @@ async fn dispatch(ctx: &Context, request: Request) -> Result<Response, StatusCod
             if path.is_empty() {
                 return Err(StatusCode::FORBIDDEN);
             }
-            let temporary = Temporary(
-                ctx.temporary
-                    .join(format!("{}.upload", uuid::Uuid::new_v4())),
-            );
-            let mut file = tokio::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary.0)
-                .await
-                .map_err(|_| StatusCode::INSUFFICIENT_STORAGE)?;
-            let mut stream = body.into_data_stream();
-            use tokio::io::AsyncWriteExt;
-            let mut size = 0u64;
-            while let Some(bytes) = stream
-                .try_next()
-                .await
-                .map_err(|_| StatusCode::BAD_REQUEST)?
-            {
-                size = size
-                    .checked_add(bytes.len() as u64)
-                    .ok_or(StatusCode::PAYLOAD_TOO_LARGE)?;
-                file.write_all(&bytes)
-                    .await
-                    .map_err(|_| StatusCode::INSUFFICIENT_STORAGE)?;
-            }
-            if let Some(length) = parts.headers.get(header::CONTENT_LENGTH) {
-                if length.to_str().ok().and_then(|v| v.parse::<u64>().ok()) != Some(size) {
-                    return Err(StatusCode::BAD_REQUEST);
-                }
-            }
-            file.flush()
-                .await
-                .map_err(|_| StatusCode::INSUFFICIENT_STORAGE)?;
-            drop(file);
+            let length = parts
+                .headers
+                .get(header::CONTENT_LENGTH)
+                .map(|value| {
+                    value
+                        .to_str()
+                        .ok()
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .ok_or(StatusCode::BAD_REQUEST)
+                })
+                .transpose()?;
             ctx.client
-                .upload(&path, &temporary.0, true, Arc::new(AtomicU64::new(0)))
+                .upload_stream(&path, length, body.into_data_stream())
                 .await
                 // Missing remote file after a PUT is a failed upload, not a
                 // WebDAV "file disappeared" event. Keep rclone's pending copy.
@@ -349,12 +319,6 @@ async fn dispatch(ctx: &Context, request: Request) -> Result<Response, StatusCod
             Ok(response(StatusCode::CREATED, Body::empty()))
         }
         _ => Err(StatusCode::METHOD_NOT_ALLOWED),
-    }
-}
-struct Temporary(PathBuf);
-impl Drop for Temporary {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
     }
 }
 fn api_error(error: String) -> StatusCode {

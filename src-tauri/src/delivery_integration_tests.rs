@@ -30,6 +30,7 @@ fn fixture() -> Server {
         let mut shares = HashMap::<String, Value>::new();
         let mut retry_uploads = 0u32;
         let mut dropped_upload_response = false;
+        let mut interrupted_downloads = std::collections::HashSet::new();
         while !stopped.load(Ordering::Relaxed) {
             let (stream, _) = match listener.accept() {
                 Ok(s) => s,
@@ -114,6 +115,31 @@ fn fixture() -> Server {
                     }
                     ("GET", "files") => {
                         if let Some(Some(bytes)) = files.get(path) {
+                            if matches!(path, "/resume-download.bin" | "/restart-download.bin") {
+                                let range = lower.lines().any(|line| line.starts_with("range:"));
+                                let tag = if path == "/restart-download.bin" && range {
+                                    "changed"
+                                } else {
+                                    "fixture-v1"
+                                };
+                                extra = format!("ETag: \"{tag}\"\r\n");
+                                if !range && interrupted_downloads.insert(path.to_string()) {
+                                    let stream = reader.get_mut();
+                                    let _ = write!(
+                                        stream,
+                                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n{extra}\r\n",
+                                        bytes.len()
+                                    );
+                                    let _ = stream.write_all(&bytes[..bytes.len() / 2]);
+                                    std::thread::sleep(Duration::from_millis(80));
+                                    continue;
+                                }
+                                if !range && path == "/resume-download.bin" {
+                                    // A successful test must continue with a Range request.
+                                    let _ = reader.get_mut().write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                                    continue;
+                                }
+                            }
                             response = bytes.clone();
                             if let Some(range) = lower
                                 .lines()
@@ -126,10 +152,10 @@ fn fixture() -> Server {
                                 if start <= end && end < bytes.len() {
                                     response = bytes[start..=end].to_vec();
                                     status = 206;
-                                    extra = format!(
+                                    extra.push_str(&format!(
                                         "Content-Range: bytes {start}-{end}/{}\r\n",
                                         bytes.len()
-                                    );
+                                    ));
                                 } else {
                                     status = 416;
                                 }
@@ -223,6 +249,42 @@ fn fixture() -> Server {
 }
 
 #[tokio::test]
+async fn download_recovers_from_an_interrupted_body() {
+    let server = fixture();
+    let mut client = Client::new(Credentials {
+        site: "https://fixture.invalid/".into(),
+        user: "fixture".into(),
+        password: "fixture-only".into(),
+    })
+    .unwrap();
+    client.base = tauri::Url::parse(&server.url).unwrap();
+    let root =
+        std::env::temp_dir().join(format!("cloudloom-download-test-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    let content: Vec<u8> = (0..256 * 1024)
+        .map(|i| ((i / 65536 + i) % 251) as u8)
+        .collect();
+    let source = root.join("source");
+    std::fs::write(&source, &content).unwrap();
+    for name in ["resume-download.bin", "restart-download.bin"] {
+        client
+            .upload_inner(&format!("/{name}"), &source, Arc::new(AtomicU64::new(0)))
+            .await
+            .unwrap();
+        let target = root.join(name);
+        let progress = Arc::new(AtomicU64::new(0));
+        client
+            .download(name, &target, content.len() as u64, progress.clone())
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(target).unwrap(), content);
+        assert_eq!(progress.load(Ordering::Relaxed), content.len() as u64);
+    }
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 3);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn upload_deadline_tracks_inactivity_instead_of_total_duration() {
     let server = fixture();
     let progress = Arc::new(AtomicU64::new(0));
@@ -284,29 +346,24 @@ async fn false_upload_acknowledgements_never_complete_transfers() {
         );
         assert!(source.is_file());
     }
-    let bridge = crate::delivery_dav::Bridge::start(client.clone(), root.join("uploads"), false)
+    let bridge = crate::delivery_dav::Bridge::start(client.clone(), false)
         .await
         .unwrap();
-    let response = Http::builder()
-        .no_proxy()
-        .build()
-        .unwrap()
-        .put(format!("{}phantom.mp4", bridge.url))
-        .bearer_auth(&bridge.secret)
-        .body("video bytes")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        response.status(),
-        StatusCode::BAD_GATEWAY,
-        "rclone must receive a failure, retaining its pending VFS copy"
-    );
-    assert_eq!(
-        std::fs::read_dir(root.join("uploads")).unwrap().count(),
-        0,
-        "Discard only the duplicate HTTP staging file, never the VFS/source file"
-    );
+    let http = Http::builder().no_proxy().build().unwrap();
+    for name in ["phantom.mp4", "html-response.mp4", "corrupted.mp4"] {
+        let response = http
+            .put(format!("{}{name}", bridge.url))
+            .bearer_auth(&bridge.secret)
+            .body("video bytes")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_GATEWAY,
+            "rclone must receive a failure, retaining its pending VFS copy: {name}"
+        );
+    }
     drop(bridge);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -336,7 +393,7 @@ async fn explorer_delivery_bridge_real_rclone_roundtrip() {
     let client = Arc::new(client);
     let root = std::env::temp_dir().join(format!("cloudloom-dav-test-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
-    let bridge = crate::delivery_dav::Bridge::start(client.clone(), root.join("uploads"), false)
+    let bridge = crate::delivery_dav::Bridge::start(client.clone(), false)
         .await
         .unwrap();
     let http = Http::builder()
@@ -358,6 +415,22 @@ async fn explorer_delivery_bridge_real_rclone_roundtrip() {
             .status(),
         StatusCode::FORBIDDEN
     );
+    if real.is_some() {
+        let stream = futures_util::stream::iter([
+            Ok::<_, std::io::Error>(axum::body::Bytes::from_static(b"unknown ")),
+            Ok(axum::body::Bytes::from_static(b"length")),
+        ]);
+        let response = http
+            .put(format!("{}chunked.txt", bridge.url))
+            .bearer_auth(&bridge.secret)
+            .body(reqwest::Body::wrap_stream(stream))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(client.stat("chunked.txt").await.unwrap()["Size"], 14);
+        client.delete("chunked.txt", false).await.unwrap();
+    }
     let binary = Path::new(env!("CARGO_MANIFEST_DIR")).join(if cfg!(windows) {
         "resources/rclone.exe"
     } else {
@@ -457,7 +530,7 @@ async fn explorer_delivery_bridge_real_rclone_roundtrip() {
         run(vec!["cat".into(), "storage:folder/renamed.txt".into()]).await,
         b"replacement"
     );
-    let readonly = crate::delivery_dav::Bridge::start(client.clone(), root.join("readonly"), true)
+    let readonly = crate::delivery_dav::Bridge::start(client.clone(), true)
         .await
         .unwrap();
     for method in ["PUT", "MKCOL", "DELETE", "MOVE"] {
@@ -503,7 +576,7 @@ async fn explorer_delivery_bridge_real_rclone_roundtrip() {
     .await;
     run(vec!["rmdir".into(), "storage:folder".into()]).await;
     assert!(client.list("").await.unwrap().is_empty());
-    assert_eq!(std::fs::read_dir(root.join("uploads")).unwrap().count(), 0);
+    assert!(!root.join("uploads").exists());
     #[cfg(windows)]
     if std::env::var("CLOUDLOOM_TEST_MOUNTS").as_deref() == Ok("1") {
         crate::mounts::verify_delivery_mount(client.clone(), root.join("mount"), real.is_none())
@@ -673,7 +746,11 @@ async fn user_api_file_folder_preview_and_error_roundtrip() {
         .transfer("tree", &copy, false, true, progress.clone(), true)
         .await
         .unwrap();
-    assert!(progress.load(Ordering::Relaxed) > 0);
+    assert_eq!(
+        progress.load(Ordering::Relaxed),
+        0,
+        "Verified existing files are not new downloads"
+    );
     client.rename("tree", "renamed").await.unwrap();
     assert!(client.stat("tree").await.is_err());
     assert!(

@@ -382,14 +382,7 @@ impl Mounts {
             .as_ref()
             .filter(|_| options.delivery_webdav_url.is_none())
         {
-            Some(
-                crate::delivery_dav::Bridge::start(
-                    client.clone(),
-                    cache.join("delivery-uploads"),
-                    options.read_only,
-                )
-                .await?,
-            )
+            Some(crate::delivery_dav::Bridge::start(client.clone(), options.read_only).await?)
         } else {
             None
         };
@@ -416,6 +409,8 @@ impl Mounts {
                 &format!("127.0.0.1:{port}"),
                 "--cache-dir",
                 &cache.to_string_lossy(),
+                "--buffer-size",
+                "4M",
                 "--log-level",
                 "ERROR",
             ])
@@ -468,7 +463,7 @@ impl Mounts {
         }
         let fs = remote(&profile, "")?;
         self.active.fetch_add(1, Ordering::SeqCst);
-        let result = session.rc("mount/mount", json!({"fs":fs,"mountPoint":format!("{}:", options.letter),"mountOpt":{"NetworkMode":true,"VolumeName":options.name},"vfsOpt":{"CacheMode":3,"ReadOnly":options.read_only,"CacheMaxSize":10_737_418_240u64,"CacheMaxAge":1_000_000_000u64,"CachePollInterval":2_000_000_000u64,"CacheMinFreeSpace":1_073_741_824u64,"WriteBack":2_000_000_000u64,"DirCacheTime":15_000_000_000u64,"PollInterval":30_000_000_000u64}})).await;
+        let result = session.rc("mount/mount", json!({"fs":fs,"mountPoint":format!("{}:", options.letter),"mountOpt":{"NetworkMode":true,"VolumeName":options.name},"vfsOpt":{"CacheMode":2,"ReadOnly":options.read_only,"CacheMaxSize":10_737_418_240u64,"CacheMaxAge":1_000_000_000u64,"CachePollInterval":2_000_000_000u64,"CacheMinFreeSpace":1_073_741_824u64,"WriteBack":2_000_000_000u64,"DirCacheTime":15_000_000_000u64,"PollInterval":30_000_000_000u64}})).await;
         if let Err(error) = result {
             self.active.fetch_sub(1, Ordering::SeqCst);
             return Err(error);
@@ -600,6 +595,116 @@ async fn restore(engine: &Engine, mounts: &Mounts, inner: &mut Inner) -> Result<
     }
     Ok(())
 }
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExplorerTransfer {
+    profile_id: String,
+    letter: String,
+    path: String,
+    status: &'static str,
+    bytes: u64,
+    total: u64,
+    completed_at: Option<String>,
+}
+
+async fn session_transfers(
+    session: &Session,
+    options: &Options,
+) -> Result<Vec<ExplorerTransfer>, String> {
+    let (history, stats, queue) = tokio::join!(
+        session.rc("core/transferred", json!({})),
+        session.rc("core/stats", json!({})),
+        session.rc("vfs/queue", json!({})),
+    );
+    let history = history?;
+    let stats = stats?;
+    let queue = queue?;
+    let mut rows = std::collections::BTreeMap::new();
+    let row = |path: &str, status, total, bytes, completed_at| ExplorerTransfer {
+        profile_id: options.id.clone(),
+        letter: options.letter.clone(),
+        path: path.into(),
+        status,
+        bytes,
+        total,
+        completed_at,
+    };
+    for item in history["transferred"].as_array().into_iter().flatten() {
+        if item["checked"] != false || item["what"] != "transferring" {
+            continue;
+        }
+        let (Some(path), Some(error), Some(completed_at), Some(total)) = (
+            item["name"].as_str(),
+            item["error"].as_str(),
+            item["completed_at"].as_str(),
+            item["size"].as_u64(),
+        ) else {
+            continue;
+        };
+        let status = if error.is_empty() {
+            "complete"
+        } else {
+            "error"
+        };
+        let bytes = item["bytes"].as_u64().unwrap_or(0).min(total);
+        rows.insert(
+            path.to_string(),
+            row(path, status, total, bytes, Some(completed_at.into())),
+        );
+    }
+    for item in queue["queue"].as_array().into_iter().flatten() {
+        let (Some(path), Some(total)) = (item["name"].as_str(), item["size"].as_u64()) else {
+            continue;
+        };
+        let uploading = item["uploading"] == true;
+        let bytes = if uploading {
+            stats["transferring"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|transfer| transfer["name"] == path)
+                .and_then(|transfer| transfer["bytes"].as_u64())
+                .unwrap_or(0)
+                .min(total)
+        } else {
+            0
+        };
+        let status = if uploading {
+            "active"
+        } else if item["tries"].as_u64().unwrap_or(0) > 0 {
+            "retrying"
+        } else {
+            "queued"
+        };
+        rows.insert(path.to_string(), row(path, status, total, bytes, None));
+    }
+    Ok(rows.into_values().collect())
+}
+
+#[tauri::command]
+pub(crate) async fn explorer_transfers(
+    mounts: State<'_, Mounts>,
+) -> Result<Vec<ExplorerTransfer>, String> {
+    let inner = mounts.inner.lock().await;
+    let reads = inner.records.iter().filter_map(|record| {
+        let session = inner.sessions.get(&record.options.id)?;
+        Some(session_transfers(session, &record.options))
+    });
+    let snapshots = tokio::time::timeout(
+        Duration::from_secs(3),
+        futures_util::future::join_all(reads),
+    )
+    .await
+    .map_err(|_| "Не удалось обновить очередь Проводника")?;
+    let mut rows = Vec::new();
+    for snapshot in snapshots {
+        rows.extend(snapshot?);
+    }
+    #[cfg(windows)]
+    platform::publish_sync_badges(&rows);
+    Ok(rows)
+}
+
 #[tauri::command]
 pub(crate) async fn explorer_disks(
     engine: State<'_, Engine>,
@@ -878,33 +983,33 @@ pub(crate) async fn verify_delivery_mount(
         prepare_cache_directory(&mut recursive).is_err(),
         "A cloud disk must never buffer itself"
     );
-    tokio::fs::write(
-        drive.join("api-mounted.txt"),
-        b"real WinFsp Delivery bridge",
-    )
-    .await
-    .unwrap();
+    let video: Vec<u8> = (0..512 * 1024)
+        .map(|i| ((i / 65536 + i) % 251) as u8)
+        .collect();
+    tokio::fs::write(drive.join("api-mounted.mp4"), &video)
+        .await
+        .unwrap();
     let mut uploaded = false;
     for _ in 0..80 {
-        if client.stat("api-mounted.txt").await.is_ok() {
+        if client
+            .stat("api-mounted.mp4")
+            .await
+            .ok()
+            .and_then(|item| item["Size"].as_u64())
+            == Some(video.len() as u64)
+        {
             uploaded = true;
             break;
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     assert!(uploaded, "Mounted write must arrive at the user API");
-    assert_eq!(
-        tokio::fs::read(drive.join("api-mounted.txt"))
-            .await
-            .unwrap(),
-        b"real WinFsp Delivery bridge"
-    );
     let cache = mounts.inner.lock().await.sessions[&options.id]
         .cache
         .clone();
     let mut cleaned = false;
     for _ in 0..60 {
-        if !cache_cleanup::contains(&cache, "api-mounted.txt") {
+        if !cache_cleanup::contains(&cache, "api-mounted.mp4") {
             cleaned = true;
             break;
         }
@@ -914,7 +1019,30 @@ pub(crate) async fn verify_delivery_mount(
         cleaned,
         "A completed, closed upload must leave the local buffer automatically"
     );
-    tokio::fs::rename(drive.join("api-mounted.txt"), drive.join("renamed.txt"))
+    assert_eq!(
+        tokio::fs::read(drive.join("api-mounted.mp4"))
+            .await
+            .unwrap(),
+        video
+    );
+    assert!(
+        !cache_cleanup::contains(&cache, "api-mounted.mp4"),
+        "Reading a confirmed file must not recreate a disk cache"
+    );
+    {
+        let inner = mounts.inner.lock().await;
+        let transfers = session_transfers(&inner.sessions[&options.id], &options)
+            .await
+            .unwrap();
+        assert!(transfers.iter().any(|item| item.path == "api-mounted.mp4"
+            && item.status == "complete"
+            && item.total == video.len() as u64));
+    }
+    assert!(
+        !cache.join("delivery-uploads").exists(),
+        "Delivery must not create a duplicate upload buffer"
+    );
+    tokio::fs::rename(drive.join("api-mounted.mp4"), drive.join("renamed.txt"))
         .await
         .unwrap();
     tokio::fs::remove_file(drive.join("renamed.txt"))

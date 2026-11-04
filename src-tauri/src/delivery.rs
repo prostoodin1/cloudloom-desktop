@@ -1,5 +1,5 @@
 //! SFTPGo user API only. No administrator endpoints, browser cookies, or remote code.
-use futures_util::TryStreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use reqwest::{Client as Http, Method, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -7,7 +7,7 @@ use std::{
     path::Path,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -15,6 +15,22 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const MISSING: &str = "Файл, папка или бакет не найдены. Обновите список и проверьте путь.";
 const UPLOAD_ATTEMPTS: u32 = 5;
+const DOWNLOAD_ATTEMPTS: u32 = 3;
+const NETWORK_FAILURE: &str =
+    "Не удалось связаться с Delivery. Проверьте адрес, сеть и HTTPS-сертификат сервера.";
+const INCOMPLETE_DOWNLOAD: &str = "Delivery передал файл не полностью. Повторите передачу.";
+
+struct DownloadPartial<'a> {
+    path: &'a Path,
+    keep: bool,
+}
+impl Drop for DownloadPartial<'_> {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = std::fs::remove_file(self.path);
+        }
+    }
+}
 fn valid_share_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
@@ -72,7 +88,7 @@ fn status_error(status: StatusCode) -> String {
     }
 }
 fn network_error(_: reqwest::Error) -> String {
-    "Не удалось связаться с Delivery. Проверьте адрес, сеть и HTTPS-сертификат сервера.".into()
+    NETWORK_FAILURE.into()
 }
 pub(crate) async fn is_webdav(input: &str) -> Result<bool, String> {
     let url = site_url(input)?;
@@ -455,31 +471,46 @@ impl Client {
         if expected > limit {
             return Err("Файл превышает лимит загрузки".into());
         }
-        // Publish only completed bytes. A dropped/cancelled future can leave its
-        // unique partial file, but never a truncated file at the final name.
-        let temporary =
-            local.with_file_name(format!(".cloudloom-{}.partial", uuid::Uuid::new_v4()));
-        let result = self
-            .download_inner(path, &temporary, limit, progress, true)
-            .await;
-        if result.is_ok() {
-            if tokio::fs::metadata(&temporary)
-                .await
-                .map_err(|_| "Не удалось проверить скачанный файл")?
-                .len()
-                != expected
-            {
-                let _ = tokio::fs::remove_file(&temporary).await;
-                return Err("Delivery передал файл не полностью. Повторите передачу".into());
+        let base = progress.load(Ordering::Relaxed);
+        for attempt in 1..=DOWNLOAD_ATTEMPTS {
+            progress.store(base, Ordering::Relaxed);
+            let temporary =
+                local.with_file_name(format!(".cloudloom-{}.partial", uuid::Uuid::new_v4()));
+            let result = self
+                .download_inner(path, &temporary, expected, progress.clone(), true)
+                .await;
+            let result = match result {
+                Ok(()) => {
+                    let _partial = DownloadPartial {
+                        path: &temporary,
+                        keep: false,
+                    };
+                    if tokio::fs::metadata(&temporary)
+                        .await
+                        .map_err(|_| "Не удалось проверить скачанный файл")?
+                        .len()
+                        != expected
+                    {
+                        Err(INCOMPLETE_DOWNLOAD.into())
+                    } else {
+                        return publish_download(&temporary, local).await.map_err(|_| {
+                            "Не удалось сохранить файл без перезаписи. Проверьте место назначения".into()
+                        });
+                    }
+                }
+                Err(error) => Err(error),
+            };
+            match result {
+                Err(error)
+                    if attempt < DOWNLOAD_ATTEMPTS
+                        && (error == NETWORK_FAILURE || error == INCOMPLETE_DOWNLOAD) =>
+                {
+                    tokio::time::sleep(Duration::from_secs(u64::from(attempt))).await;
+                }
+                result => return result,
             }
-            // Unlike rename on Unix, hard_link fails if the destination exists.
-            let published = tokio::fs::hard_link(&temporary, local).await.map_err(|_| {
-                "Не удалось сохранить файл без перезаписи. Проверьте место назначения".to_string()
-            });
-            let _ = tokio::fs::remove_file(&temporary).await;
-            return published;
         }
-        result
+        unreachable!("the final attempt always returns")
     }
     pub async fn preview_download(
         &self,
@@ -487,7 +518,7 @@ impl Client {
         local: &Path,
         limit: u64,
     ) -> Result<(), String> {
-        self.download_inner(path, local, limit, Arc::new(AtomicU64::new(0)), true)
+        self.download_inner(path, local, limit, Arc::new(AtomicU64::new(0)), false)
             .await
     }
     async fn download_inner(
@@ -496,7 +527,7 @@ impl Client {
         local: &Path,
         limit: u64,
         progress: Arc<AtomicU64>,
-        cleanup: bool,
+        resume: bool,
     ) -> Result<(), String> {
         let path = api_path(path)?;
         let mut response = self
@@ -513,40 +544,60 @@ impl Client {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let mut file = tokio::fs::File::from_std(
-            options
-                .open(local)
-                .map_err(|_| "Не удалось создать локальный файл без перезаписи")?,
-        );
-        // We own this newly created file. Never remove an existing file on a failed create_new.
-        let result = async {
-            let mut bytes = 0u64;
-            while let Some(chunk) = response.chunk().await.map_err(network_error)? {
-                bytes = bytes
-                    .checked_add(chunk.len() as u64)
-                    .ok_or("Файл слишком большой")?;
-                if bytes > limit {
-                    return Err("Файл превышает лимит загрузки".into());
+        let opened = options
+            .open(local)
+            .map_err(|_| "Не удалось создать локальный файл без перезаписи")?;
+        let mut partial = DownloadPartial {
+            path: local,
+            keep: false,
+        };
+        let mut file = tokio::fs::File::from_std(opened);
+        let etag = response
+            .headers()
+            .get(reqwest::header::ETAG)
+            .filter(|tag| tag.as_bytes().starts_with(b"\""))
+            .cloned();
+        let mut bytes = 0u64;
+        let mut reconnects = 0;
+        loop {
+            let interrupted = match response.chunk().await {
+                Ok(Some(chunk)) => {
+                    bytes = bytes
+                        .checked_add(chunk.len() as u64)
+                        .ok_or("Файл слишком большой")?;
+                    if bytes > limit || expected.is_some_and(|total| bytes > total) {
+                        return Err("Файл превышает лимит загрузки".into());
+                    }
+                    file.write_all(&chunk)
+                        .await
+                        .map_err(|_| "Не удалось записать локальный файл")?;
+                    progress.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+                    continue;
                 }
-                file.write_all(&chunk)
-                    .await
-                    .map_err(|_| "Не удалось записать локальный файл")?;
-                progress.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+                Ok(None) if expected.is_none_or(|total| bytes == total) => break,
+                Ok(None) => INCOMPLETE_DOWNLOAD,
+                Err(_) => NETWORK_FAILURE,
+            };
+            // Append only when the range response identifies the exact same representation.
+            if resume
+                && reconnects < 2
+                && let (Some(total), Some(etag)) = (expected, etag.as_ref())
+                && bytes > 0
+                && bytes < total
+                && let Ok(next) = self.range(&path, bytes, total - 1, total).await
+                && next.headers().get(reqwest::header::ETAG) == Some(etag)
+            {
+                reconnects += 1;
+                response = next;
+            } else {
+                return Err(interrupted.into());
             }
-            if expected.is_some_and(|expected| bytes != expected) {
-                return Err("Delivery передал файл не полностью. Повторите передачу".into());
-            }
-            file.sync_all()
-                .await
-                .map_err(|_| "Не удалось сохранить локальный файл")?;
-            Ok(())
         }
-        .await;
-        drop(file);
-        if cleanup && result.is_err() {
-            let _ = std::fs::remove_file(local);
-        }
-        result
+        file.sync_all()
+            .await
+            .map_err(|_| "Не удалось сохранить локальный файл")?;
+        partial.keep = true;
+        Ok(())
     }
     pub async fn upload(
         &self,
@@ -673,6 +724,102 @@ impl Client {
                 .await
                 .map_err(|_| "Не удалось проверить файл")?
                 == 0)
+    }
+
+    // The VFS already owns the retryable copy. Forward its PUT with backpressure
+    // and keep only bounded verification samples, never a second disk file.
+    pub(crate) async fn upload_stream(
+        &self,
+        path: &str,
+        length: Option<u64>,
+        stream: impl futures_util::Stream<Item = Result<axum::body::Bytes, axum::Error>>
+        + Send
+        + 'static,
+    ) -> Result<(), String> {
+        const SAMPLE: usize = 64 * 1024;
+        let path = api_path(path)?;
+        let progress = Arc::new(AtomicU64::new(0));
+        let samples = Arc::new(std::sync::Mutex::new((Vec::new(), Vec::new())));
+        let eof = Arc::new(AtomicBool::new(false));
+        let stream = stream
+            .map_ok({
+                let progress = progress.clone();
+                let samples = samples.clone();
+                move |chunk| {
+                    let mut samples = samples.lock().unwrap();
+                    let prefix = 2 * SAMPLE - samples.0.len();
+                    samples
+                        .0
+                        .extend_from_slice(&chunk[..chunk.len().min(prefix)]);
+                    if chunk.len() >= SAMPLE {
+                        samples.1.clear();
+                        samples.1.extend_from_slice(&chunk[chunk.len() - SAMPLE..]);
+                    } else {
+                        let overflow = (samples.1.len() + chunk.len()).saturating_sub(SAMPLE);
+                        samples.1.drain(..overflow);
+                        samples.1.extend_from_slice(&chunk);
+                    }
+                    progress.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+                    chunk
+                }
+            })
+            .chain(futures_util::stream::poll_fn({
+                let eof = eof.clone();
+                move |_| {
+                    eof.store(true, Ordering::Release);
+                    std::task::Poll::Ready(None)
+                }
+            }));
+        let mut request = self
+            .upload_http
+            .post(self.endpoint("files/upload"))
+            .query(&[("path", &path)])
+            .bearer_auth(self.token().await?)
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream");
+        if let Some(length) = length {
+            request = request.header(reqwest::header::CONTENT_LENGTH, length);
+        }
+        let response = upload_with_idle_timeout(
+            request.body(reqwest::Body::wrap_stream(stream)),
+            progress.clone(),
+            Duration::from_secs(120),
+        )
+        .await?;
+        if response.status() != StatusCode::CREATED {
+            if response.status() == StatusCode::UNAUTHORIZED {
+                let _ = self.login(None).await;
+            }
+            return Err(status_error(response.status()));
+        }
+        let size = progress.load(Ordering::Relaxed);
+        let (head, tail) = std::mem::take(&mut *samples.lock().unwrap());
+        let remote = self.stat(&path).await?;
+        if !length.map_or_else(|| eof.load(Ordering::Acquire), |expected| expected == size)
+            || remote["IsDir"] != false
+            || remote["Size"].as_u64() != Some(size)
+        {
+            return Err("Delivery did not confirm the uploaded file size".into());
+        }
+        if size == 0 {
+            return Ok(());
+        }
+        if size <= (2 * SAMPLE) as u64 {
+            let response = self
+                .request(Method::GET, "files", &[("path", &path)])
+                .await?;
+            return verify_sample(response, &head).await;
+        }
+        verify_sample(
+            self.range(&path, 0, SAMPLE as u64 - 1, size).await?,
+            &head[..SAMPLE],
+        )
+        .await?;
+        verify_sample(
+            self.range(&path, size - SAMPLE as u64, size - 1, size)
+                .await?,
+            &tail,
+        )
+        .await
     }
 
     async fn upload_inner(
@@ -890,7 +1037,6 @@ impl Client {
                         .map_err(|_| "Не удалось проверить локальный файл")?
                         .len();
                     if local_size == size && self.matches_local(&remote, &local).await? {
-                        progress.fetch_add(size, Ordering::Relaxed);
                         continue;
                     }
                     return Err("Локальный файл отличается от исходного. Он сохранён; выберите другое место назначения".into());
@@ -902,6 +1048,52 @@ impl Client {
         Ok(())
     }
 }
+async fn publish_download(temporary: &Path, destination: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+        let directory = temporary.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
+        let directory = tokio::fs::canonicalize(directory).await?;
+        let source = directory.join(
+            temporary
+                .file_name()
+                .ok_or(std::io::ErrorKind::InvalidInput)?,
+        );
+        let target = directory.join(
+            destination
+                .file_name()
+                .ok_or(std::io::ErrorKind::InvalidInput)?,
+        );
+        let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+        let target: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+        // Same-directory move without MOVEFILE_REPLACE_EXISTING, including on exFAT.
+        if unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), 0) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        // Unlike rename on Unix, hard_link fails if the destination exists.
+        tokio::fs::hard_link(temporary, destination).await
+    }
+}
+
+async fn verify_sample(mut response: Response, expected: &[u8]) -> Result<(), String> {
+    let mut received = 0;
+    while let Some(chunk) = response.chunk().await.map_err(network_error)? {
+        if !expected[received..].starts_with(&chunk) {
+            return Err("Delivery did not confirm the uploaded file contents".into());
+        }
+        received += chunk.len();
+    }
+    if received != expected.len() {
+        return Err("Delivery returned an incomplete verification sample".into());
+    }
+    Ok(())
+}
+
 async fn upload_with_idle_timeout(
     request: reqwest::RequestBuilder,
     progress: Arc<AtomicU64>,

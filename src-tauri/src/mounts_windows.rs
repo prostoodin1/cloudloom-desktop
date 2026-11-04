@@ -168,3 +168,79 @@ pub fn cleanup(a: &Appearance) -> Result<(), String> {
     notify(&a.letter, false);
     Ok(())
 }
+
+pub(super) fn publish_sync_badges(rows: &[super::ExplorerTransfer]) {
+    use std::{
+        collections::BTreeMap,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    use windows_sys::Win32::UI::Shell::{SHCNE_UPDATEITEM, SHCNF_PATHW};
+    use winreg::enums::REG_OPTION_VOLATILE;
+
+    const REGISTRATION: &str =
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\ShellIconOverlayIdentifiers";
+    let registry = RegKey::predef(HKEY_LOCAL_MACHINE);
+    if !["Cloudloom Sync Pending", "Cloudloom Sync Complete"]
+        .iter()
+        .any(|name| {
+            registry
+                .open_subkey(format!(r"{REGISTRATION}\{name}"))
+                .is_ok()
+        })
+    {
+        return;
+    }
+    let current = RegKey::predef(HKEY_CURRENT_USER);
+    let Ok((key, _)) = current.create_subkey_with_options_flags(
+        r"Software\Cloudloom\ExplorerSync",
+        REG_OPTION_VOLATILE,
+        KEY_READ | KEY_WRITE,
+    ) else {
+        return;
+    };
+    let Ok(now) = SystemTime::now().duration_since(UNIX_EPOCH) else {
+        return;
+    };
+    let now = now.as_secs();
+    let mut desired = BTreeMap::new();
+    for row in rows.iter().take(400) {
+        if row.path.is_empty() || crate::engine::safe_path(&row.path).is_err() {
+            continue;
+        }
+        let state = match row.status {
+            "queued" | "active" | "retrying" => 1,
+            "complete" => 2,
+            _ => continue,
+        };
+        let path = format!("{}:\\{}", row.letter, row.path.replace('/', "\\"));
+        if path.encode_utf16().count() <= 16000 {
+            desired.insert(path, state);
+        }
+    }
+    let notify_path = |path: &str| {
+        let wide: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
+        if wide.len() <= 260 {
+            unsafe {
+                SHChangeNotify(
+                    SHCNE_UPDATEITEM as i32,
+                    SHCNF_PATHW,
+                    wide.as_ptr().cast(),
+                    std::ptr::null(),
+                )
+            };
+        }
+    };
+    for (name, _) in key.enum_values().filter_map(Result::ok).collect::<Vec<_>>() {
+        if !desired.contains_key(&name) && key.delete_value(&name).is_ok() {
+            notify_path(&name);
+        }
+    }
+    for (path, state) in desired {
+        let old = key.get_value::<u64, _>(&path).unwrap_or(0);
+        if key.set_value(&path, &(((now + 20) << 2) | state)).is_ok()
+            && ((old & 3) != state || (old >> 2) < now)
+        {
+            notify_path(&path);
+        }
+    }
+}
