@@ -1,3 +1,4 @@
+mod background;
 mod delivery;
 mod delivery_dav;
 mod engine;
@@ -11,6 +12,7 @@ mod winfsp;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    use tauri::Manager;
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             use tauri::Manager;
@@ -26,35 +28,21 @@ pub fn run() {
         .manage(mounts::Mounts::default())
         .manage(winfsp::Installer::default())
         .on_window_event(|window, event| {
-            use tauri::{Emitter, Manager};
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window
-                    .state::<winfsp::Installer>()
-                    .busy
-                    .load(std::sync::atomic::Ordering::SeqCst)
-                {
-                    api.prevent_close();
-                    let _ = window.emit("winfsp-installing", ());
-                    return;
-                }
-                if window
-                    .state::<mounts::Mounts>()
-                    .active
-                    .load(std::sync::atomic::Ordering::SeqCst)
-                    > 0
-                {
-                    api.prevent_close();
-                    let _ = window.emit("explorer-close-blocked", ());
-                }
+                api.prevent_close();
+                background::close(window.app_handle(), false);
             }
         })
         .setup(|app| {
             use tauri::Manager;
             let state = engine::initialize(app.handle()).map_err(std::io::Error::other)?;
             app.manage(state);
+            background::initialize(app.handle())?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            background::background_settings,
+            background::save_background_settings,
             engine::list_profiles,
             engine::list_tasks,
             engine::monthly_download_bytes,
@@ -90,6 +78,15 @@ pub fn run() {
             mounts::open_winfsp_help,
             winfsp::install_winfsp,
         ])
-        .run(tauri::generate_context!())
-        .expect("Cloudloom could not start");
+        .build(tauri::generate_context!())
+        .expect("Cloudloom could not start")
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested {
+                code: None, api, ..
+            } = event
+            {
+                api.prevent_exit();
+                background::close(app, true);
+            }
+        });
 }

@@ -113,8 +113,8 @@ async fn real_windows_mount_read_write_readonly_and_appearance() {
         .unwrap();
     open.flush().unwrap();
     assert!(
-        stop(&engine, &mounts, options.id.clone()).await.is_err(),
-        "Open dirty writer must block disconnection"
+        stop_for_exit(&engine, &mounts).await.is_err(),
+        "Open dirty writer must block shutdown"
     );
     assert!(mounts.has_profile(&options.id).await);
     drop(open);
@@ -140,10 +140,11 @@ async fn real_windows_mount_read_write_readonly_and_appearance() {
     )
     .unwrap();
     std::fs::remove_file(drive.join("Папка/renamed.txt")).unwrap();
-    stop(&engine, &mounts, options.id.clone()).await.unwrap();
+    mounts.inner.lock().await.records[0].options.auto_mount = true;
+    stop_for_exit(&engine, &mounts).await.unwrap();
     assert_eq!(mounts.active.load(Ordering::SeqCst), 0);
     assert!(!storage.join("Папка/renamed.txt").exists());
-    assert!(!mounts.inner.lock().await.records[0].options.auto_mount);
+    assert!(mounts.inner.lock().await.records[0].options.auto_mount);
     options.read_only = true;
     options.name = format!(
         "Переименован {}",
@@ -192,7 +193,9 @@ async fn real_windows_mount_read_write_readonly_and_appearance() {
     assert!(cold.status.success());
     // A real parent restart creates new Shell clients, unlike this test's warm SHGetFileInfo cache.
     assert!(cold_label.contains(&options.name));
-    stop(&engine, &mounts, options.id.clone()).await.unwrap();
+    stop(&engine, &mounts, options.id.clone(), false)
+        .await
+        .unwrap();
     let parent = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER);
     assert!(
         parent

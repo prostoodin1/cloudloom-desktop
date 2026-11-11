@@ -409,6 +409,8 @@ impl Mounts {
                 &format!("127.0.0.1:{port}"),
                 "--cache-dir",
                 &cache.to_string_lossy(),
+                "--transfers",
+                "1",
                 "--buffer-size",
                 "4M",
                 "--log-level",
@@ -709,8 +711,12 @@ pub(crate) async fn explorer_transfers(
 pub(crate) async fn explorer_disks(
     engine: State<'_, Engine>,
     mounts: State<'_, Mounts>,
+    background: State<'_, crate::background::Background>,
 ) -> Result<Overview, String> {
     let _lifecycle = mounts.lifecycle.lock().await;
+    if background.is_closing() {
+        return Err("Cloudloom завершает работу".into());
+    }
     let mut inner = mounts.inner.lock().await;
     restore(&engine, &mounts, &mut inner).await?;
     let mut disks = vec![];
@@ -784,9 +790,13 @@ fn platform_cleanup(_: &Appearance) -> Result<(), String> {
 pub(crate) async fn connect_explorer(
     engine: State<'_, Engine>,
     mounts: State<'_, Mounts>,
+    background: State<'_, crate::background::Background>,
     mut options: Options,
 ) -> Result<(), String> {
     let _lifecycle = mounts.lifecycle.lock().await;
+    if background.is_closing() {
+        return Err("Cloudloom завершает работу".into());
+    }
     validate(&options)?;
     prepare_cache_directory(&mut options)?;
     supported(&engine.profile(&options.id)?)?;
@@ -820,7 +830,7 @@ pub(crate) async fn disconnect_explorer(
     id: String,
 ) -> Result<(), String> {
     let _lifecycle = mounts.lifecycle.lock().await;
-    stop(&engine, &mounts, id).await
+    stop(&engine, &mounts, id, false).await
 }
 #[tauri::command]
 pub(crate) async fn clear_explorer_cache(
@@ -850,7 +860,29 @@ pub(crate) async fn clear_explorer_cache(
     cache_cleanup::staging(&cache.join("delivery-uploads"))?;
     Ok(removed)
 }
-async fn stop(engine: &Engine, mounts: &Mounts, id: String) -> Result<(), String> {
+pub(crate) async fn stop_for_exit(engine: &Engine, mounts: &Mounts) -> Result<(), String> {
+    let _lifecycle = mounts.lifecycle.lock().await;
+    let ids = {
+        let inner = mounts.inner.lock().await;
+        for session in inner.sessions.values() {
+            if session.pending(true).await? > 0 {
+                return Err("Дождитесь отправки изменений на дисках Проводника. Cloudloom продолжает работу.".into());
+            }
+        }
+        inner.sessions.keys().cloned().collect::<Vec<_>>()
+    };
+    for id in ids {
+        stop(engine, mounts, id, true).await?;
+    }
+    Ok(())
+}
+
+async fn stop(
+    engine: &Engine,
+    mounts: &Mounts,
+    id: String,
+    preserve_auto_mount: bool,
+) -> Result<(), String> {
     let mut inner = mounts.inner.lock().await;
     let session = inner.sessions.get(&id).ok_or("Диск не подключён")?;
     // Include dirty metadata: files still open for writing are not yet in the upload queue.
@@ -882,7 +914,9 @@ async fn stop(engine: &Engine, mounts: &Mounts, id: String) -> Result<(), String
     }
     if let Some(r) = inner.records.iter_mut().find(|r| r.options.id == id) {
         r.appearance = None;
-        r.options.auto_mount = false;
+        if !preserve_auto_mount {
+            r.options.auto_mount = false;
+        }
     }
     save(&engine, &inner.records)?;
     if late? > 0 {
@@ -1054,7 +1088,9 @@ pub(crate) async fn verify_delivery_mount(
     tokio::fs::remove_dir(drive.join("new-folder"))
         .await
         .unwrap();
-    stop(&engine, &mounts, options.id.clone()).await.unwrap();
+    stop(&engine, &mounts, options.id.clone(), false)
+        .await
+        .unwrap();
     assert!(client.list("").await.unwrap().is_empty());
     let seed = engine.directory.join("seed.txt");
     tokio::fs::write(&seed, b"read uncached from Delivery API")
@@ -1087,7 +1123,9 @@ pub(crate) async fn verify_delivery_mount(
             .await
             .is_err()
     );
-    stop(&engine, &mounts, options.id.clone()).await.unwrap();
+    stop(&engine, &mounts, options.id.clone(), false)
+        .await
+        .unwrap();
     client.delete("remote-seed.txt", false).await.unwrap();
     if fail_ack {
         {
@@ -1126,7 +1164,9 @@ pub(crate) async fn verify_delivery_mount(
         );
         assert!(dirty_files(&cache.join("vfsMeta")).unwrap() > 0);
         assert!(
-            stop(&engine, &mounts, options.id.clone()).await.is_err(),
+            stop(&engine, &mounts, options.id.clone(), false)
+                .await
+                .is_err(),
             "Pending upload must block disconnect"
         );
         // Fixture-only crash teardown: terminate this test's child, preserving its

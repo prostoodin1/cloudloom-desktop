@@ -1,4 +1,4 @@
-Cloudloom Quartz: optional Explorer status icons (Windows x64)
+Cloudloom Rowan: optional Explorer status icons (Windows x64)
 
 1. Extract the complete ZIP to a folder.
 2. Open 64-bit PowerShell as administrator in that folder.

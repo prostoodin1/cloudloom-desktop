@@ -184,7 +184,7 @@ pub fn initialize(app: &AppHandle) -> Result<Engine, String> {
         tasks: Mutex::new(tasks),
         retries: Mutex::new(HashMap::new()),
         cancel: Mutex::new(HashMap::new()),
-        slots: Arc::new(Semaphore::new(3)),
+        slots: Arc::new(Semaphore::new(1)),
         moves: tokio::sync::Mutex::new(()),
         delivery: Mutex::new(HashMap::new()),
         previews: tokio::sync::Mutex::new(HashMap::new()),
@@ -209,7 +209,7 @@ impl Engine {
             tasks: Mutex::new(vec![]),
             retries: Mutex::new(HashMap::new()),
             cancel: Mutex::new(HashMap::new()),
-            slots: Arc::new(Semaphore::new(3)),
+            slots: Arc::new(Semaphore::new(1)),
             moves: tokio::sync::Mutex::new(()),
             delivery: Mutex::new(HashMap::new()),
             previews: tokio::sync::Mutex::new(HashMap::new()),
@@ -242,7 +242,7 @@ impl Engine {
             tasks: Mutex::new(vec![]),
             retries: Mutex::new(HashMap::new()),
             cancel: Mutex::new(HashMap::new()),
-            slots: Arc::new(Semaphore::new(3)),
+            slots: Arc::new(Semaphore::new(1)),
             moves: tokio::sync::Mutex::new(()),
             delivery: Mutex::new(HashMap::from([("api-test".into(), client)])),
             previews: tokio::sync::Mutex::new(HashMap::new()),
@@ -392,6 +392,9 @@ impl Engine {
             remote: remote.into(),
         })
     }
+    pub(crate) fn transfers_running(&self) -> bool {
+        self.cancel.lock().map_or(true, |tasks| !tasks.is_empty())
+    }
     pub(crate) fn command(&self, id: &str) -> Command {
         let mut cmd = Command::new(&self.binary);
         cmd.args([
@@ -405,7 +408,7 @@ impl Engine {
         .stderr(Stdio::piped())
         .kill_on_drop(true);
         #[cfg(windows)]
-        cmd.creation_flags(0x08000000);
+        cmd.creation_flags(0x08000000 | 0x00004000); // CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS
         cmd
     }
     pub(crate) async fn execute(&self, id: &str, args: Vec<String>) -> Result<String, String> {
@@ -1390,11 +1393,13 @@ async fn begin_transfer(
     };
     let task_id = task.id.clone();
     let signal = Arc::new(Notify::new());
-    engine
-        .cancel
-        .lock()
-        .map_err(err)?
-        .insert(task_id.clone(), signal.clone());
+    {
+        let mut pending = engine.cancel.lock().map_err(err)?;
+        if app.state::<crate::background::Background>().is_closing() {
+            return Err("Cloudloom завершает работу".into());
+        }
+        pending.insert(task_id.clone(), signal.clone());
+    }
     engine
         .retries
         .lock()
@@ -1517,8 +1522,11 @@ async fn begin_transfer(
             "--timeout".into(),
             "5m".into(),
             "--transfers".into(),
-            "2".into(),
+            "1".into(),
         ];
+        if task.direction == "upload" {
+            args.extend(["--multi-thread-streams".into(), "0".into()]);
+        }
         if resume {
             args.push("--checksum".into());
         }
@@ -1765,7 +1773,7 @@ mod tests {
             tasks: Mutex::new(vec![]),
             retries: Mutex::new(HashMap::new()),
             cancel: Mutex::new(HashMap::new()),
-            slots: Arc::new(Semaphore::new(3)),
+            slots: Arc::new(Semaphore::new(1)),
             moves: tokio::sync::Mutex::new(()),
             delivery: Mutex::new(HashMap::new()),
             previews: tokio::sync::Mutex::new(HashMap::new()),

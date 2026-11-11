@@ -16,6 +16,7 @@ import { formatBytes } from './lib/format'
 import { guides, guideUrl, releaseName, connectionSummary } from './services'
 import './App.css'
 
+type CloseMode = 'keepOpen' | 'tray' | 'disconnect'
 type Prompt = { kind: 'folder' | 'rename' | 'delete'; entry?: Entry }
 function pathJoin(...parts: string[]) { return parts.filter(Boolean).join('/') }
 function iconFor(entry: Entry) {
@@ -58,6 +59,26 @@ export default function App() {
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [profile, setProfile] = useState<Profile | null>(null)
   const [choose, setChoose] = useState(true)
+  const [generalSettings, setGeneralSettings] = useState(false)
+  const [closeMode, setCloseMode] = useState<CloseMode>('keepOpen')
+  const [settingsError, setSettingsError] = useState('')
+  const [savingSettings, setSavingSettings] = useState(false)
+  const openSettings = async () => {
+    setSettingsError('')
+    try {
+      setCloseMode(await call<CloseMode>('background_settings'))
+      setGeneralSettings(true)
+    } catch (e) { setToast(String(e)) }
+  }
+  const changeCloseMode = async (mode: CloseMode) => {
+    setSavingSettings(true)
+    setSettingsError('')
+    try {
+      await call('save_background_settings', { mode })
+      setCloseMode(mode)
+    } catch (e) { setSettingsError(String(e)) }
+    finally { setSavingSettings(false) }
+  }
   const [explorer, setExplorer] = useState(false)
   const explorerPanel = useRef<ExplorerDisksHandle>(null)
   const mountProfile = (id: string) => { explorerPanel.current?.selectProfile(id); setExplorer(true) }
@@ -116,7 +137,7 @@ export default function App() {
     let disposed = false
     let running = false
     const refresh = async () => {
-      if (running) return
+      if (running || document.hidden) return
       running = true
       try {
         // Keep quota requests bounded; do not block browsing on unsupported providers.
@@ -129,19 +150,22 @@ export default function App() {
       } finally { running = false }
     }
     void refresh()
-    const timer = window.setInterval(() => void refresh(), 60000)
-    return () => { disposed = true; clearInterval(timer) }
+    const onVisible = () => { if (!document.hidden) void refresh() }
+    document.addEventListener('visibilitychange', onVisible)
+    const timer = window.setInterval(onVisible, 60000)
+    return () => { disposed = true; clearInterval(timer); document.removeEventListener('visibilitychange', onVisible) }
   }, [profiles])
 
   useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem('cloudloom-theme', theme) }, [theme])
   useEffect(() => { localStorage.setItem('cloudloom-view', view) }, [view])
   useEffect(() => { if (!toast) return; const timer = window.setTimeout(() => setToast(''), 4500); return () => clearTimeout(timer) }, [toast])
-  useEffect(() => { current.current = { profile, path, choose, blocked: showTransfers || explorer || !!preview || !!share || !!prompt || moving } }, [profile, path, choose, preview, share, prompt, moving, explorer, showTransfers])
+  useEffect(() => { current.current = { profile, path, choose, blocked: generalSettings || showTransfers || explorer || !!preview || !!share || !!prompt || moving } }, [profile, path, choose, preview, share, prompt, moving, explorer, showTransfers, generalSettings])
   useEffect(() => {
     if (!desktop) return
     const unlisten = listen('explorer-close-blocked', () => { setExplorer(true); setToast('Сначала отключите диски Проводника. Cloudloom продолжает отправлять ваши изменения.') })
+    const blocked = listen<string>('cloudloom-close-blocked', ({ payload }) => setToast(payload))
     const installing = listen('winfsp-installing', () => { setExplorer(true); setToast('Завершите установку WinFsp в окне Windows, прежде чем закрывать Cloudloom.') })
-    return () => { void unlisten.then(fn => fn()); void installing.then(fn => fn()) }
+    return () => { void unlisten.then(fn => fn()); void blocked.then(fn => fn()); void installing.then(fn => fn()) }
   }, [])
   useEffect(() => {
     if (!desktop) return
@@ -322,7 +346,7 @@ export default function App() {
   }
 
   return <div className={`app ${choose ? 'choosing' : ''}`} style={{ '--accent': theme === 'dark' ? liveUI.ui.accentDark : liveUI.ui.accentLight } as React.CSSProperties}>
-    <div className="workspace" aria-hidden={choose || preview || share || explorer ? true : undefined} inert={choose || !!preview || !!share || explorer || moving || undefined}>
+    <div className="workspace" aria-hidden={choose || preview || share || explorer || generalSettings ? true : undefined} inert={choose || !!preview || !!share || explorer || moving || generalSettings || undefined}>
       <aside className="sidebar">
         <Brand />
         <p className="section-label">ПРОСТРАНСТВО</p>
@@ -335,7 +359,7 @@ export default function App() {
         <div className="sidebar-bottom"><div className="privacy"><Cloud size={17}/><span>Ваши файлы — в вашем облаке.<br/>Прямое соединение с хранилищем.</span></div><button className="theme-button" onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={17}/> : <Moon size={17}/>}<span>{theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'}</span><small>{releaseName}</small></button></div>
       </aside>
       <main>
-        <header className="topbar"><div className="breadcrumb"><Cloud size={17}/><span>{profile?.name ?? 'Ваше пространство'}</span><ChevronRight size={14}/><strong>{showTransfers ? 'Передачи' : path.split('/').pop() || 'Мои файлы'}</strong></div><div className="header-buttons"><span className="connection-state"><i/>Подключено</span><button className="round" title="Выбрать профиль" aria-label="Выбрать профиль" onClick={() => setChoose(true)}><Menu size={19}/></button></div></header>
+        <header className="topbar"><div className="breadcrumb"><Cloud size={17}/><span>{profile?.name ?? 'Ваше пространство'}</span><ChevronRight size={14}/><strong>{showTransfers ? 'Передачи' : path.split('/').pop() || 'Мои файлы'}</strong></div><div className="header-buttons"><span className="connection-state"><i/>Подключено</span>{desktop && <button className="round" aria-label="Общие настройки" title="Общие настройки" onClick={() => void openSettings()}><Settings2 size={18}/></button>}<button className="round" title="Выбрать профиль" aria-label="Выбрать профиль" onClick={() => setChoose(true)}><Menu size={19}/></button></div></header>
         {!showTransfers && <section className="files-content">
           {profile && <div className="active-storage"><HardDrive size={15}/><span>{profile.name} · <StorageMeter usage={usage[profile.id]}/></span><small>Квота аккаунта / диска · обновление раз в минуту</small></div>}
           <div className="files-heading"><div><p className="eyebrow">{profile ? service(profile.provider).name : 'CLOUDLOOM'}</p><h1>{path.split('/').pop() || 'Мои файлы'}<span>{entries.length}</span></h1><p className="description">{profile?.root ? `${profile.name} / ${profile.root}` : 'Всё нужное. В одном пространстве.'}</p></div><div className="file-actions"><button className="button subtle" onClick={() => { setText(''); setPrompt({kind:'folder'}) }} disabled={profile?.provider === 'google cloud storage'} title={profile?.provider === 'google cloud storage' ? 'В GCS папки создаются загрузкой объектов с префиксом' : undefined}><FolderPlus size={17}/>Новая папка</button><details className="upload-menu"><summary className="button primary"><Upload size={17}/>Загрузить<ChevronRight size={13}/></summary><div className="dropdown"><button onClick={() => void upload(false)}><File size={16}/>Файлы</button><button onClick={() => void upload(true)}><Folder size={16}/>Папку целиком</button></div></details></div></div>
@@ -404,7 +428,7 @@ export default function App() {
       </main>
     </div>
 
-    {choose && <div className="profile-overlay" inert={explorer || undefined} aria-hidden={explorer || undefined}><div className="ambient ambient-one"/><div className="ambient ambient-two"/><div className="selector-top"><Brand/><button className="round" aria-label="Переключить тему" onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={18}/> : <Moon size={18}/>}</button></div><div className="welcome-title"><span className="welcome-tag"><i/>{liveUI.ui.tagline}</span><h1>{liveUI.ui.welcomeTitle}<br/><em>{liveUI.ui.welcomeEmphasis}</em></h1><p>{liveUI.ui.subtitle}</p><button className="button subtle explorer-entry" onClick={() => setExplorer(true)}><HardDrive size={16}/>Диски в Проводнике</button><button className="button subtle explorer-entry" onClick={openTransfers}><ArrowUpToLine size={16}/>Передачи{transferCount > 0 && ` · ${transferCount}`}</button></div>
+    {choose && <div className="profile-overlay" inert={explorer || generalSettings || undefined} aria-hidden={explorer || generalSettings || undefined}><div className="ambient ambient-one"/><div className="ambient ambient-two"/><div className="selector-top"><Brand/><div className="header-buttons">{desktop && <button className="round" aria-label="Общие настройки" title="Общие настройки" onClick={() => void openSettings()}><Settings2 size={18}/></button>}<button className="round" aria-label="Переключить тему" onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={18}/> : <Moon size={18}/>}</button></div></div><div className="welcome-title"><span className="welcome-tag"><i/>{liveUI.ui.tagline}</span><h1>{liveUI.ui.welcomeTitle}<br/><em>{liveUI.ui.welcomeEmphasis}</em></h1><p>{liveUI.ui.subtitle}</p><button className="button subtle explorer-entry" onClick={() => setExplorer(true)}><HardDrive size={16}/>Диски в Проводнике</button><button className="button subtle explorer-entry" onClick={openTransfers}><ArrowUpToLine size={16}/>Передачи{transferCount > 0 && ` · ${transferCount}`}</button></div>
       <div className="profile-picker" role="dialog" aria-label="Выбор профиля">
         <section className="saved-profiles"><div className="picker-heading"><Users size={17}/><h2>Мои профили</h2><span>{profiles.length}</span></div><p className="picker-description">Продолжите с нужным аккаунтом</p><div className="profile-cards">{profiles.length ? profiles.map(p => <div className="saved-profile" key={p.id}><button className="profile-open" {...choiceProps(`profile:${p.id}`)} onDoubleClick={() => enter(p)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); enter(p) } }}><ServiceIcon id={p.provider}/><span><strong>{p.name}</strong><small>{service(p.provider).name}{p.root ? ` · ${p.root}` : ''}</small></span><ChevronRight size={17}/></button><button className="profile-mount" title="Добавить в Проводник" aria-label={`В Проводник: ${p.name}`} onClick={() => mountProfile(p.id)}><HardDrive size={15}/></button><button className="disconnect" title="Отключить профиль" aria-label={`Отключить ${p.name}`} onClick={() => void disconnect(p)}><LogOut size={13}/></button></div>) : <div className="no-profiles"><div><Cloudy size={31}/></div><h3>Здесь будут ваши профили</h3><p>Подключите сервис справа.<br/>В следующий раз аккаунт будет ждать вас здесь.</p></div>}</div><button className="new-profile" onClick={() => { setServiceQuery(''); document.getElementById('service-search')?.focus() }}><Plus size={19}/><span>Добавить профиль</span></button><div className="picker-security"><span className="lock-dot"/>OAuth-вход или ключи вашего сервиса.<br/>Учётные данные зашифрованы на компьютере.</div></section>
         <section className="available-services" id="services"><div className="picker-heading"><Cloud size={17}/><h2>Подключить хранилище</h2><span>{providers.length}</span></div><label className="service-search"><Search size={14}/><input id="service-search" aria-label="Найти сервис" placeholder="Найти сервис…" value={serviceQuery} onChange={e => setServiceQuery(e.target.value)}/>{serviceQuery && <button aria-label="Сбросить поиск сервисов" onClick={() => setServiceQuery('')}><X size={13}/></button>}</label><div className="services">{providers.filter(p => `${p.name} ${p.description}`.toLocaleLowerCase().includes(serviceQuery.toLocaleLowerCase().trim())).map(p => <button className="service-option" key={p.id} {...choiceProps(`service:${p.id}`)} onDoubleClick={() => selectService(p.id)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); selectService(p.id) } }}><ServiceIcon id={p.id}/><span><strong>{p.name}</strong><small>{p.description}</small></span><Plus size={17}/></button>)}{!providers.some(p => `${p.name} ${p.description}`.toLocaleLowerCase().includes(serviceQuery.toLocaleLowerCase().trim())) && <p className="service-empty" role="status">Сервис не найден. Попробуйте другое название.</p>}</div></section>
@@ -413,6 +437,21 @@ export default function App() {
         title="Успешные скачивания через Cloudloom на этом компьютере. Счётчик начинается заново в новом месяце."
       >За месяц скачано · {new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(monthlyDownloads / 1e9)} ГБ</small>}{!desktop && <div className="browser-note">Предпросмотр интерфейса. Для входа и работы с файлами запустите приложение для macOS или Windows.</div>}{error && <div className="selector-error error">{error}<button onClick={() => setError('')}><X size={15}/></button></div>}
     </div>}
+
+    {generalSettings && <div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="general-settings-title" onKeyDown={e => { if (e.key === 'Escape') setGeneralSettings(false) }}>
+      <button className="modal-close" aria-label="Закрыть настройки" onClick={() => setGeneralSettings(false)}><X size={18}/></button>
+      <h2 id="general-settings-title">Общие настройки</h2>
+      <label>При закрытии окна
+        <select autoFocus value={closeMode} disabled={savingSettings} onChange={e => void changeCloseMode(e.target.value as CloseMode)}>
+          <option value="keepOpen">Оставить окно открытым, пока диски подключены</option>
+          <option value="tray">Свернуть в трей и оставить диски подключёнными</option>
+          <option value="disconnect">Отключить диски и выйти</option>
+        </select>
+      </label>
+      {closeMode === 'tray' && <p className="setup-note">Диски и передачи продолжат работать. Открыть окно или выйти можно через значок Cloudloom.</p>}
+      {closeMode === 'disconnect' && <p className="setup-note">Если есть незавершённые передачи, окно останется открытым.</p>}
+      {settingsError && <p className="error" role="alert">{settingsError}</p>}
+    </section></div>}
 
     {connecting && <div className="modal-backdrop"><div className="modal connect-modal" role="dialog" aria-modal="true" aria-labelledby="connect-title"><button className="modal-close" aria-label="Закрыть подключение" onClick={closeConnect} disabled={busy}><X size={18}/></button><ServiceIcon id={connecting}/><div className="connect-heading"><h2 id="connect-title">{service(connecting).name}</h2><button className="help-toggle" type="button" aria-label={`Помощь с подключением ${service(connecting).name}`} aria-expanded={showHelp} aria-controls="service-help" title="Как получить ключи и войти" onClick={() => setShowHelp(v => !v)}><CircleHelp size={16}/><span>Помощь</span></button></div><p className="modal-subtitle">{busy || reply?.question ? 'Завершите настройку подключения' : 'Добавьте свой профиль в Cloudloom'}</p>
       {showHelp && <section id="service-help" className="service-help" aria-label={`Инструкция для ${service(connecting).name}`}><h3>Как подключить {service(connecting).name}</h3><p>{guides[connecting].intro}</p><ol>{guides[connecting].steps.map(step => <li key={step}>{step}</li>)}</ol>{guides[connecting].note && <p className="help-note">{guides[connecting].note}</p>}<button className="help-link" type="button" onClick={openGuide}>Официальная инструкция<ExternalLink size={13}/></button><small>Откроется в браузере. Никому не передавайте ключи и токены.</small></section>}
