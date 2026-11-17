@@ -6,9 +6,9 @@ export function canDrop(sources: string[], destination: string) {
 }
 
 type Drag = { sources: string[]; x: number; y: number; destination: string | null }
-export function useFileInteractions({ path, selected, setSelected, open, move, blocked }: {
+export function useFileInteractions({ path, selected, setSelected, open, move, blocked, readOnly = false }: {
   path: string; selected: Set<string>; setSelected: (value: Set<string>) => void
-  open: (entry: Entry) => void; move: (sources: string[], destination: string) => Promise<void>; blocked: boolean
+  open: (entry: Entry) => void; move: (sources: string[], destination: string) => Promise<void>; blocked: boolean; readOnly?: boolean
 }) {
   const [drag, setDrag] = useState<Drag | null>(null)
   const cancel = useRef<(() => void) | null>(null)
@@ -30,7 +30,7 @@ export function useFileInteractions({ path, selected, setSelected, open, move, b
       if (event.key === 'Enter' && (event.target as HTMLElement).closest('.entry-name')) { event.preventDefault(); if (!blocked) open(entry) }
     },
     onPointerDown: (event: PointerEvent<HTMLDivElement>) => {
-      if (blocked || event.button !== 0 || event.ctrlKey || event.metaKey || (event.target as HTMLElement).closest('label,details')) return
+      if (blocked || readOnly || event.button !== 0 || event.ctrlKey || event.metaKey || (event.target as HTMLElement).closest('label,details')) return
       cancel.current?.()
       const node = event.currentTarget
       const sources = (selected.has(entry.path) ? [...selected] : [entry.path]).map(join)

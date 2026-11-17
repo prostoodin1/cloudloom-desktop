@@ -1,18 +1,16 @@
-# Cloudloom Rowan
+# Cloudloom Willow
 
-В «Общие настройки → При закрытии окна» можно выбрать сворачивание в трей, безопасное отключение дисков перед выходом или оставить окно открытым, пока диски подключены. Через значок Cloudloom можно вернуть окно или выйти. Файлы с незавершёнными изменениями блокируют отключение дисков и выход.
-
-Cloudloom выполняет одну передачу из приложения за раз. Каждый диск Проводника отправляет по одному файлу, а rclone в Windows работает с пониженным приоритетом. Пока окно скрыто, проверка квот приостанавливается. Это снижает конкуренцию за ресурсы, но причина зависания на конкретном компьютере не воспроизведена.
-
-Значки статусов остаются в Cloudloom. Значки для Windows Explorer доступны отдельным пакетом. Cloudloom сохраняет возможность продолжить скачивание Delivery при подтверждении версии файла сервером и ведёт месячный счётчик скачиваний.
+- Во вкладке «Передачи» видно, куда сохраняется каждый файл. Активные операции остаются в «Текущих», а завершённые, отменённые и неудачные передачи доступны в «Истории». Передачи из Проводника показаны отдельно.
+- Добавлены Drime, Internxt Drive, Enterprise File Fabric и Quatrix. У каждого сервиса есть инструкция по подключению.
+- Новый профиль «По HTTPS-ссылке» открывает публичные каталоги для просмотра и скачивания. «WebDAV по токену» подключает файловый API по HTTPS-адресу и Bearer-токену с правами сервера.
 
 ## Загрузки
 
-- **Cloudloom_Rowan_Windows_x64_Setup.exe** — Windows 10/11 x64 с автообновлением.
-- **Cloudloom_Rowan_Windows_x64_Portable.zip** — распакуйте целиком. Нужен WebView2.
-- **Cloudloom_Rowan_Windows_x64_ExplorerOverlay.zip** — необязательное расширение для Проводника. Инструкции находятся в README.txt.
-- **Cloudloom_Rowan_macOS_Intel.dmg** — Intel Mac, macOS 13+.
-- **Cloudloom_Rowan_macOS_AppleSilicon.dmg** — Mac с M-чипом, macOS 13+.
+- **Cloudloom_Willow_Windows_x64_Setup.exe** — Windows 10/11 x64 с автообновлением.
+- **Cloudloom_Willow_Windows_x64_Portable.zip** — распакуйте целиком. Нужен WebView2.
+- **Cloudloom_Willow_Windows_x64_ExplorerOverlay.zip** — необязательное расширение для Проводника. Инструкции находятся в README.txt.
+- **Cloudloom_Willow_macOS_Intel.dmg** — Intel Mac, macOS 13+.
+- **Cloudloom_Willow_macOS_AppleSilicon.dmg** — Mac с M-чипом, macOS 13+.
 
 Автор проекта — [prostoodin1](https://github.com/prostoodin1). [Все версии](https://github.com/prostoodin1/cloudloom-desktop/releases).
 

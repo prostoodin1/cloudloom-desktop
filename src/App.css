@@ -50,3 +50,7 @@ main{min-width:0}.topbar{height:81px;display:flex;justify-content:space-between;
   font-size: 9px;
   text-align: center;
 }
+
+.transfer-views { display: flex; gap: 8px; margin-bottom: 16px; }
+.transfer-views [aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+.transfer-info .transfer-destination { overflow-wrap: anywhere; }

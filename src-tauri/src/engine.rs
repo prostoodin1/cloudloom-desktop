@@ -39,6 +39,10 @@ pub struct Task {
     pub error: Option<String>,
     #[serde(default)]
     pub retryable: bool,
+    #[serde(default)]
+    pub destination: Option<String>,
+    #[serde(default)]
+    pub finished_at: Option<String>,
 }
 
 #[derive(Clone)]
@@ -473,7 +477,10 @@ impl Engine {
         std::fs::rename(temporary, destination).map_err(err)
     }
 
-    fn emit_task(&self, app: &AppHandle, task: Task) {
+    fn emit_task(&self, app: &AppHandle, mut task: Task) {
+        if !matches!(task.status.as_str(), "active" | "queued") {
+            task.finished_at = Some(chrono::Utc::now().to_rfc3339());
+        }
         if let Ok(mut tasks) = self.tasks.lock() {
             if task.direction == "download"
                 && task.status == "complete"
@@ -581,15 +588,16 @@ fn service_help_url(provider: &str) -> Result<String, String> {
         return Ok("https://docs.sftpgo.com/latest/rest-api/".into());
     }
     let page = match provider {
-        "nextcloud" | "owncloud" => "webdav/",
+        "nextcloud" | "owncloud" | "webdav-token" => "webdav/",
         "wasabi" => "s3/#wasabi",
         "r2" => "s3/#cloudflare-r2",
         "drive" => "drive/#making-your-own-client-id",
         "google cloud storage" => "googlecloudstorage/",
         "alias" => "local/",
         "onedrive" | "dropbox" | "box" | "pcloud" | "yandex" | "webdav" | "s3" | "mega"
-        | "koofr" | "hidrive" | "b2" | "azureblob" | "storj" | "seafile" | "sftp"
-        | "protondrive" | "opendrive" | "jottacloud" | "pikpak" | "putio" | "zoho" | "fichier" => {
+        | "http" | "koofr" | "hidrive" | "b2" | "azureblob" | "storj" | "seafile" | "sftp"
+        | "protondrive" | "opendrive" | "jottacloud" | "pikpak" | "putio" | "zoho" | "fichier"
+        | "drime" | "internxt" | "filefabric" | "quatrix" => {
             return Ok(format!("https://rclone.org/{provider}/"));
         }
         _ => return Err("Нет инструкции для этого сервиса".into()),
@@ -599,13 +607,13 @@ fn service_help_url(provider: &str) -> Result<String, String> {
 
 fn adapter_for(provider: &str) -> &str {
     match provider {
-        "delivery" | "nextcloud" | "owncloud" => "webdav",
+        "delivery" | "nextcloud" | "owncloud" | "webdav-token" => "webdav",
         "wasabi" | "r2" => "s3",
         other => other,
     }
 }
 
-fn require_https_endpoint(value: Option<&String>) -> Result<(), String> {
+fn parse_https_address(value: Option<&String>) -> Result<tauri::Url, String> {
     let url = value
         .and_then(|value| tauri::Url::parse(value).ok())
         .ok_or("Укажите полный HTTPS-адрес подключения")?;
@@ -618,6 +626,11 @@ fn require_https_endpoint(value: Option<&String>) -> Result<(), String> {
     {
         return Err("Нужен HTTPS-адрес без пароля, query-параметров и фрагмента".into());
     }
+    Ok(url)
+}
+
+fn require_https_endpoint(value: Option<&String>) -> Result<(), String> {
+    let url = parse_https_address(value)?;
     if url.path() == "/web" || url.path().starts_with("/web/") {
         return Err(
             "Это адрес веб-интерфейса, не WebDAV. Получите WebDAV URL у администратора".into(),
@@ -668,6 +681,10 @@ pub async fn connect_profile(
         return Err("Укажите название профиля".into());
     }
     let allowed = [
+        "drime",
+        "internxt",
+        "filefabric",
+        "quatrix",
         "putio",
         "zoho",
         "fichier",
@@ -679,6 +696,8 @@ pub async fn connect_profile(
         "pcloud",
         "yandex",
         "webdav",
+        "webdav-token",
+        "http",
         "s3",
         "alias",
         "mega",
@@ -701,6 +720,63 @@ pub async fn connect_profile(
     ];
     if !allowed.contains(&request.provider.as_str()) {
         return Err("Провайдер не поддерживается".into());
+    }
+    let required: &[&str] = match request.provider.as_str() {
+        "drime" => &["access_token"],
+        "internxt" => &["email", "pass"],
+        "filefabric" => &["url", "permanent_token"],
+        "quatrix" => &["host", "api_key"],
+        _ => &[],
+    };
+    if required.iter().any(|key| {
+        request
+            .options
+            .get(*key)
+            .is_none_or(|value| value.trim().is_empty())
+    }) {
+        return Err("Заполните обязательные поля подключения".into());
+    }
+    if request.provider == "filefabric" {
+        require_https_endpoint(request.options.get("url"))?;
+    }
+    if request.provider == "quatrix" {
+        let host = request.options.get_mut("host").unwrap();
+        let domain = host.trim();
+        if !domain.contains('.')
+            || !domain.split('.').all(|label| {
+                !label.is_empty()
+                    && !label.starts_with('-')
+                    && !label.ends_with('-')
+                    && label
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+            })
+        {
+            return Err("Укажите домен Quatrix без https://, порта и пути".into());
+        }
+        *host = domain.to_ascii_lowercase();
+    }
+    if request.provider == "http" {
+        let mut url = parse_https_address(request.options.get("url"))?;
+        if !url.path().ends_with('/') {
+            url.path_segments_mut()
+                .map_err(|_| "Укажите ссылку на HTTPS-папку")?
+                .push("");
+        }
+        request.options.insert("url".into(), url.to_string());
+    }
+    if request.provider == "webdav-token" {
+        require_https_endpoint(request.options.get("url"))?;
+        let token = request
+            .options
+            .get_mut("bearer_token")
+            .ok_or("Введите Bearer-токен")?;
+        *token = token.trim().to_string();
+        if token.is_empty() || token.chars().any(char::is_whitespace) {
+            return Err("Введите только значение Bearer-токена".into());
+        }
+        request.options.remove("user");
+        request.options.remove("pass");
     }
     let delivery_webdav = if request.provider == "delivery" {
         crate::delivery::is_webdav(request.options.get("url").map(String::as_str).unwrap_or(""))
@@ -868,6 +944,10 @@ pub async fn connect_profile(
         "--obscure".into(),
     ];
     let valid_keys = [
+        "access_token",
+        "permanent_token",
+        "bearer_token",
+        "email",
         "api_key",
         "client_id",
         "client_secret",
@@ -905,7 +985,7 @@ pub async fn connect_profile(
         }
     }
     match request.provider.as_str() {
-        "delivery" => args.extend(["vendor".into(), "other".into()]),
+        "delivery" | "webdav-token" => args.extend(["vendor".into(), "other".into()]),
         "nextcloud" => args.extend(["vendor".into(), "nextcloud".into()]),
         "owncloud" => args.extend(["vendor".into(), "owncloud".into()]),
         "wasabi" => args.extend(["provider".into(), "Wasabi".into()]),
@@ -1354,6 +1434,9 @@ async fn begin_transfer(
         return Err("Выберите абсолютный локальный путь".into());
     }
     let (source, target) = if direction == "upload" {
+        if profile.provider == "http" {
+            return Err("HTTPS-папка доступна только для чтения".into());
+        }
         let canonical = local_path
             .canonicalize()
             .map_err(|_| "Локальный файл не найден".to_string())?;
@@ -1379,6 +1462,15 @@ async fn begin_transfer(
         }
         (remote(&profile, &path)?, local)
     };
+    let destination = if direction == "upload" {
+        format!(
+            "{} · /{}",
+            profile.name,
+            target.strip_prefix("storage:").unwrap_or(&target)
+        )
+    } else {
+        target.clone()
+    };
     let task = Task {
         id: uuid::Uuid::new_v4().to_string(),
         profile_id: id.clone(),
@@ -1390,6 +1482,8 @@ async fn begin_transfer(
         speed: 0.0,
         error: None,
         retryable: false,
+        destination: Some(destination),
+        finished_at: None,
     };
     let task_id = task.id.clone();
     let signal = Arc::new(Notify::new());
@@ -1671,7 +1765,15 @@ mod tests {
             ("putio", vec!["client_id", "client_secret"]),
             ("zoho", vec!["client_id", "client_secret", "region"]),
             ("fichier", vec!["api_key"]),
-            ("webdav", vec!["url", "vendor", "user", "pass"]),
+            ("drime", vec!["access_token"]),
+            ("internxt", vec!["email", "pass"]),
+            ("filefabric", vec!["url", "permanent_token"]),
+            ("quatrix", vec!["host", "api_key"]),
+            (
+                "webdav",
+                vec!["url", "vendor", "user", "pass", "bearer_token"],
+            ),
+            ("http", vec!["url"]),
             (
                 "s3",
                 vec![

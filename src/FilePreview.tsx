@@ -5,8 +5,8 @@ import { Download, LoaderCircle, Save, X } from 'lucide-react'
 import { call, desktop, type Entry, type PreviewData } from './api'
 import { formatBytes } from './lib/format'
 
-export function FilePreview({ profileId, remotePath, entry, onClose, onSaved, onDownload }: {
-  profileId: string; remotePath: string; entry: Entry; onClose: () => void; onSaved: () => void; onDownload: () => void
+export function FilePreview({ profileId, remotePath, entry, readOnly = false, onClose, onSaved, onDownload }: {
+  profileId: string; remotePath: string; entry: Entry; readOnly?: boolean; onClose: () => void; onSaved: () => void; onDownload: () => void
 }) {
   const [data, setData] = useState<PreviewData | null>(null)
   const [text, setText] = useState('')
@@ -76,11 +76,11 @@ export function FilePreview({ profileId, remotePath, entry, onClose, onSaved, on
   return <div className="modal-backdrop preview-backdrop"><div className="file-preview" role="dialog" aria-modal="true" aria-labelledby="preview-title" tabIndex={-1} ref={dialog}>
     <header className="preview-header"><div><h2 id="preview-title">{entry.name}</h2><small>{formatBytes(entry.size)}{dirty ? ' · Несохранённые правки' : saved ? ' · Сохранено в хранилище' : ''}</small></div><div className="preview-actions">
       <button className="button subtle" onClick={onDownload}><Download size={15}/>Скачать</button>
-      {data?.kind === 'text' && <button className="button primary" onClick={() => void saveText()} disabled={!dirty || saving}>{saving ? <LoaderCircle size={15} className="spin"/> : <Save size={15}/>}Сохранить</button>}
+      {data?.kind === 'text' && !readOnly && <button className="button primary" onClick={() => void saveText()} disabled={!dirty || saving}>{saving ? <LoaderCircle size={15} className="spin"/> : <Save size={15}/>}Сохранить</button>}
       <button className="round" aria-label="Закрыть просмотр" disabled={saving} onClick={close}><X size={18}/></button>
     </div></header>
     {error && <div className="error" role="alert">{error}</div>}
-    <div className="preview-body">{loading ? <div className="empty"><LoaderCircle className="spin" size={30}/><h3>Открываем файл</h3><p>Для видео и аудио подключаем поток — без полной копии файла на диске.</p></div> : data?.kind === 'text' ? <textarea className="text-editor" aria-label={`Редактировать ${entry.name}`} spellCheck={false} value={text} disabled={saving} onChange={event => { setText(event.target.value); setSaved(false) }}/> : data?.kind === 'image' ? <img src={src} alt={entry.name} onError={mediaError}/> : data?.kind === 'video' ? <video src={src} controls preload="metadata" onError={mediaError}/> : data?.kind === 'audio' ? <audio src={src} controls preload="metadata" onError={mediaError}/> : <div className="empty"><h3>Просмотр недоступен</h3><p>Можно скачать файл обычным способом.</p></div>}</div>
+    <div className="preview-body">{loading ? <div className="empty"><LoaderCircle className="spin" size={30}/><h3>Открываем файл</h3><p>Для видео и аудио подключаем поток — без полной копии файла на диске.</p></div> : data?.kind === 'text' ? <textarea className="text-editor" aria-label={entry.name} readOnly={readOnly} spellCheck={false} value={text} disabled={saving} onChange={event => { setText(event.target.value); setSaved(false) }}/> : data?.kind === 'image' ? <img src={src} alt={entry.name} onError={mediaError}/> : data?.kind === 'video' ? <video src={src} controls preload="metadata" onError={mediaError}/> : data?.kind === 'audio' ? <audio src={src} controls preload="metadata" onError={mediaError}/> : <div className="empty"><h3>Просмотр недоступен</h3><p>Можно скачать файл обычным способом.</p></div>}</div>
     <footer className="preview-footer">{data?.kind === 'text' ? 'UTF-8 · до 2 MiB · Ctrl+S / ⌘S · сохранение заменяет файл в хранилище' : data?.streamUrl ? 'Поток · до 50 ГБ · перемотка читает нужный участок · трафик сервиса оплачивается по его тарифу · кодеки зависят от системы' : 'Временная копия изображения · до 1 GiB'}</footer>
   </div></div>
 }

@@ -2,6 +2,7 @@
 
 Cloudloom was created by [prostoodin1](https://github.com/prostoodin1). The original repository keeps the full release archive. Studio release links are included where the same version is published there.
 
+- [Cloudloom Willow](https://github.com/prostoodin1/cloudloom-desktop/releases/tag/cloudloom-willow) · [Studio release](https://github.com/Studio-Red-Barcelona/cloudloom-desktop/releases/tag/cloudloom-willow)
 - [Cloudloom Rowan](https://github.com/prostoodin1/cloudloom-desktop/releases/tag/cloudloom-rowan) · [Studio release](https://github.com/Studio-Red-Barcelona/cloudloom-desktop/releases/tag/cloudloom-rowan)
 - [Cloudloom Quartz](https://github.com/prostoodin1/cloudloom-desktop/releases/tag/cloudloom-quartz) · [Studio release](https://github.com/Studio-Red-Barcelona/cloudloom-desktop/releases/tag/cloudloom-quartz)
 - [Cloudloom Pine](https://github.com/prostoodin1/cloudloom-desktop/releases/tag/cloudloom-pine) · [Studio release](https://github.com/Studio-Red-Barcelona/cloudloom-desktop/releases/tag/cloudloom-pine)

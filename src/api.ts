@@ -5,7 +5,7 @@ export interface StorageUsage { used: number | null; total: number | null; free:
 export interface PreviewData { token: string; kind: 'image' | 'video' | 'audio' | 'text'; localPath: string | null; streamUrl?: string | null; text: string | null }
 export interface ShareCapabilities { supported: boolean; delivery: boolean }
 export interface ShareData { url: string; id: string | null; expiresAt: number | null; canRevoke: boolean }
-export interface Task { id: string; profileId: string; name: string; direction: string; status: string; bytes: number; total: number; speed: number; error?: string; retryable: boolean }
+export interface Task { id: string; profileId: string; name: string; direction: string; status: string; bytes: number; total: number; speed: number; error?: string; retryable: boolean; destination?: string | null; finishedAt?: string | null }
 export interface Question { name: string; help: string; default: unknown; password: boolean; exclusive: boolean; examples: { Value: string; Help: string }[] | null }
 export interface ConnectReply { profile?: Profile; id?: string; question?: Question; error?: string }
 export const desktop = isTauri()
@@ -14,6 +14,10 @@ export function call<T>(command: string, args?: Record<string, unknown>): Promis
   return invoke<T>(command, args)
 }
 export const providers = [
+  { id: 'drime', name: 'Drime', description: 'Облачные файлы и командные папки', color: '#7760d7', letters: 'Dr', oauth: false },
+  { id: 'internxt', name: 'Internxt Drive', description: 'Зашифрованное облачное хранилище', color: '#457de4', letters: 'In', oauth: false },
+  { id: 'filefabric', name: 'Enterprise File Fabric', description: 'Файлы организации и подключённые хранилища', color: '#268579', letters: 'FF', oauth: false },
+  { id: 'quatrix', name: 'Quatrix', description: 'Защищённый обмен рабочими файлами', color: '#8670a8', letters: 'Q', oauth: false },
   { id: 'putio', name: 'put.io', description: 'Личный диск и медиафайлы', color: '#4c9a8b', letters: 'io', oauth: true },
   { id: 'zoho', name: 'Zoho WorkDrive', description: 'Командные файлы Zoho', color: '#df6048', letters: 'Zo', oauth: true },
   { id: 'fichier', name: '1Fichier', description: 'Файловое хранилище по API-ключу', color: '#dd853d', letters: '1F', oauth: false },
@@ -24,6 +28,8 @@ export const providers = [
   { id: 'box', name: 'Box', description: 'Облачное пространство команды', color: '#3970db', letters: 'B', oauth: true },
   { id: 'pcloud', name: 'pCloud', description: 'Личный облачный архив', color: '#16a4a5', letters: 'p', oauth: true },
   { id: 'yandex', name: 'Яндекс Диск', description: 'Ваши файлы на Диске', color: '#efb917', letters: 'Я', oauth: true },
+  { id: 'http', name: 'По HTTPS-ссылке', description: 'Открытая папка · только чтение', color: '#7297b0', letters: 'URL', oauth: false },
+  { id: 'webdav-token', name: 'WebDAV по токену', description: 'Адрес файлового API и Bearer-токен', color: '#7486a7', letters: 'API', oauth: false },
   { id: 'webdav', name: 'WebDAV / Nextcloud', description: 'Свой сервер или облако', color: '#7486a7', letters: 'W', oauth: false },
   { id: 's3', name: 'Amazon S3 / S3 compatible', description: 'AWS, Wasabi, MinIO и другие', color: '#ba7b39', letters: 'S3', oauth: false },
   { id: 'alias', name: 'Локальная папка', description: 'Файлы на этом компьютере', color: '#8c83c5', letters: 'PC', oauth: false },

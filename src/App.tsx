@@ -38,6 +38,7 @@ type ExplorerTransfer = {
   bytes: number
   total: number
   completedAt: string | null
+  destination?: string | null
 }
 const explorerStatus = {
   queued: 'Ожидает отправки',
@@ -49,6 +50,19 @@ const explorerStatus = {
 function explorerHistoryKey(task: ExplorerTransfer) {
   return JSON.stringify([task.profileId, task.path, task.completedAt])
 }
+type ExplorerHistory = { rows: ExplorerTransfer[]; hidden: string[] }
+const historyStorageKey = 'cloudloom-explorer-transfer-history'
+function loadExplorerHistory(): ExplorerHistory {
+  try {
+    const saved = JSON.parse(localStorage.getItem(historyStorageKey) ?? 'null')
+    if (Array.isArray(saved?.rows) && Array.isArray(saved?.hidden)) return saved
+  } catch { /* Storage can be unavailable. */ }
+  return { rows: [], hidden: [] }
+}
+function Destination({ path }: { path?: string | null }) {
+  return <small className="transfer-destination" title={path ?? undefined}>Куда: {path || 'путь не сохранён'}</small>
+}
+
 function SyncBadge({ status }: { status: ExplorerTransfer['status'] }) {
   const Icon = status === 'complete' ? CloudCheck : status === 'active' ? RefreshCw : status === 'queued' ? Clock3 : CircleAlert
   return <span className={`sync-badge ${status}`} role="img" title={explorerStatus[status]} aria-label={explorerStatus[status]}><Icon size={15}/></span>
@@ -58,6 +72,7 @@ export default function App() {
   const liveUI = useLiveUI()
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [profile, setProfile] = useState<Profile | null>(null)
+  const readOnly = profile?.provider === 'http'
   const [choose, setChoose] = useState(true)
   const [generalSettings, setGeneralSettings] = useState(false)
   const [closeMode, setCloseMode] = useState<CloseMode>('keepOpen')
@@ -95,7 +110,12 @@ export default function App() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [showTransfers, setShowTransfers] = useState(false)
   const [explorerTransfers, setExplorerTransfers] = useState<ExplorerTransfer[]>([])
-  const [hiddenExplorerHistory, setHiddenExplorerHistory] = useState<Set<string>>(new Set())
+  const [explorerHistory, setExplorerHistory] = useState(loadExplorerHistory)
+  const [transferView, setTransferView] = useState<'current' | 'history'>('current')
+  useEffect(() => {
+    try { localStorage.setItem(historyStorageKey, JSON.stringify(explorerHistory)) }
+    catch { /* Keep the history available in memory. */ }
+  }, [explorerHistory])
   const [explorerTransferError, setExplorerTransferError] = useState(false)
   const [connecting, setConnecting] = useState<string | null>(null)
   const [showHelp, setShowHelp] = useState(false)
@@ -116,7 +136,7 @@ export default function App() {
   const [moving, setMoving] = useState(false)
   const choiceProps = useChoiceActivation()
   const [usage, setUsage] = useState<Record<string, StorageUsage>>({})
-  const [preview, setPreview] = useState<{ entry: Entry; profileId: string; remotePath: string } | null>(null)
+  const [preview, setPreview] = useState<{ entry: Entry; profileId: string; remotePath: string; readOnly: boolean } | null>(null)
   const [share, setShare] = useState<{ entry: Entry; profileId: string; path: string; capabilities: ShareCapabilities } | null>(null)
   const [shareCaps, setShareCaps] = useState<{ id: string; value: ShareCapabilities } | null>(null)
   useEffect(() => {
@@ -199,6 +219,16 @@ export default function App() {
         if (completed.some(row => row.profileId === openProfile && completions.get(key(row)) !== row.completedAt)) reloadRef.current()
         completions = new Map(completed.map(row => [key(row), row.completedAt]))
         setExplorerTransfers(rows)
+        const finished = rows.filter(row => row.completedAt && (row.status === 'complete' || row.status === 'error'))
+        if (finished.length) setExplorerHistory(history => {
+          const known = new Set([...history.rows.map(explorerHistoryKey), ...history.hidden])
+          const added = finished.filter(row => !known.has(explorerHistoryKey(row)))
+          if (!added.length) return history
+          const merged = [...added, ...history.rows]
+            .sort((a, b) => (b.completedAt ?? '').localeCompare(a.completedAt ?? ''))
+            .slice(0, 100)
+          return { ...history, rows: merged }
+        })
         setExplorerTransferError(false)
       } catch {
         if (!disposed) setExplorerTransferError(true)
@@ -268,9 +298,9 @@ export default function App() {
     try { await call('disconnect_profile', { id: p.id }); setProfiles(items => items.filter(item => item.id !== p.id)); if (profile?.id === p.id) { setProfile(null); setEntries([]) }; notify('Профиль отключён. Данные в облаке сохранены.') } catch(e) { setError(String(e)) }
   }
   const toggle = (entry: Entry) => setSelected(items => { const next = new Set(items); if (next.has(entry.path)) next.delete(entry.path); else next.add(entry.path); return next })
-  const openPreview = (entry: Entry) => { if (profile && !entry.isDir) setPreview({ entry, profileId: profile.id, remotePath: pathJoin(path, entry.path) }) }
+  const openPreview = (entry: Entry) => { if (profile && !entry.isDir) setPreview({ entry, profileId: profile.id, remotePath: pathJoin(path, entry.path), readOnly }) }
   const { drag, rowProps, dropProps } = useFileInteractions({
-    path, selected, setSelected, blocked: choose || !!preview || !!share || !!prompt || loading || moving || actionBusy,
+    path, selected, setSelected, readOnly, blocked: choose || !!preview || !!share || !!prompt || loading || moving || actionBusy,
     open: entry => entry.isDir ? navigate(pathJoin(path, entry.path)) : openPreview(entry),
     move: async (sources, destination) => {
       if (!profile || moving) return
@@ -292,7 +322,7 @@ export default function App() {
   }
   const uploadPaths = async (paths: string[], folder?: boolean) => {
     const state = current.current
-    if (!state.profile) return
+    if (!state.profile || state.profile.provider === 'http') return
     for (const local of paths) {
       const name = local.replace(/[\\/]$/, '').split(/[\\/]/).pop() ?? ''
       try {
@@ -330,9 +360,18 @@ export default function App() {
       setTasks(items => items.filter(item => item.id !== task.id))
     } catch (e) { setError(String(e)) }
   }
-  const visibleExplorerTransfers = explorerTransfers.filter(task =>
-    !task.completedAt || !hiddenExplorerHistory.has(explorerHistoryKey(task)),
-  )
+  const showHistory = transferView === 'history'
+  const visibleAppTasks = showHistory ? tasks.filter(task => !activeTasks.includes(task)) : activeTasks
+  const visibleExplorerTransfers = showHistory
+    ? explorerHistory.rows
+    : explorerTransfers.filter(task => task.status === 'active' || task.status === 'queued' || task.status === 'retrying')
+  const dismissExplorerHistory = (task: ExplorerTransfer) => {
+    const key = explorerHistoryKey(task)
+    setExplorerHistory(history => ({
+      rows: history.rows.filter(row => explorerHistoryKey(row) !== key),
+      hidden: [...history.hidden, key].slice(-200),
+    }))
+  }
   const submitAction = async () => {
     if (!profile || !prompt) return
     setActionBusy(true); setError('')
@@ -353,7 +392,7 @@ export default function App() {
         <button className={`nav ${showTransfers ? '' : 'active'}`} onClick={openFiles}><HardDrive size={18}/>Мои файлы</button>
         <button className={`nav ${showTransfers ? 'active' : ''}`} aria-current={showTransfers ? 'page' : undefined} onClick={openTransfers}><ArrowUpToLine size={18}/>Передачи{transferCount > 0 && <span className="count">{transferCount}</span>}</button>
         <p className="section-label profile-label">МОИ ПРОФИЛИ</p>
-        {profiles.map(p => <div key={p.id} className="profile-nav-row"><button className={`profile-nav ${profile?.id === p.id ? 'selected' : ''}`} {...choiceProps(`profile:${p.id}`)} onDoubleClick={() => enter(p)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); enter(p) } }}><ServiceIcon id={p.provider}/><span><strong>{p.name}</strong><small>{service(p.provider).name}</small><StorageMeter usage={usage[p.id]}/></span><i/></button><button className="profile-mount" title="Добавить в Проводник" aria-label={`В Проводник: ${p.name}`} onClick={() => mountProfile(p.id)}><HardDrive size={15}/></button></div>)}
+        {profiles.map(p => <div key={p.id} className="profile-nav-row"><button className={`profile-nav ${profile?.id === p.id ? 'selected' : ''}`} {...choiceProps(`profile:${p.id}`)} onDoubleClick={() => enter(p)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); enter(p) } }}><ServiceIcon id={p.provider}/><span><strong>{p.name}</strong><small>{service(p.provider).name}</small><StorageMeter usage={usage[p.id]}/></span><i/></button>{p.provider !== 'http' && <button className="profile-mount" title="Добавить в Проводник" aria-label={`В Проводник: ${p.name}`} onClick={() => mountProfile(p.id)}><HardDrive size={15}/></button>}</div>)}
         <button className="add-profile" onClick={() => setChoose(true)}><Plus size={16}/>Добавить профиль</button>
         <button className="add-profile" onClick={() => setExplorer(true)}><HardDrive size={16}/>Диски в Проводнике</button>
         <div className="sidebar-bottom"><div className="privacy"><Cloud size={17}/><span>Ваши файлы — в вашем облаке.<br/>Прямое соединение с хранилищем.</span></div><button className="theme-button" onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={17}/> : <Moon size={17}/>}<span>{theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'}</span><small>{releaseName}</small></button></div>
@@ -362,34 +401,40 @@ export default function App() {
         <header className="topbar"><div className="breadcrumb"><Cloud size={17}/><span>{profile?.name ?? 'Ваше пространство'}</span><ChevronRight size={14}/><strong>{showTransfers ? 'Передачи' : path.split('/').pop() || 'Мои файлы'}</strong></div><div className="header-buttons"><span className="connection-state"><i/>Подключено</span>{desktop && <button className="round" aria-label="Общие настройки" title="Общие настройки" onClick={() => void openSettings()}><Settings2 size={18}/></button>}<button className="round" title="Выбрать профиль" aria-label="Выбрать профиль" onClick={() => setChoose(true)}><Menu size={19}/></button></div></header>
         {!showTransfers && <section className="files-content">
           {profile && <div className="active-storage"><HardDrive size={15}/><span>{profile.name} · <StorageMeter usage={usage[profile.id]}/></span><small>Квота аккаунта / диска · обновление раз в минуту</small></div>}
-          <div className="files-heading"><div><p className="eyebrow">{profile ? service(profile.provider).name : 'CLOUDLOOM'}</p><h1>{path.split('/').pop() || 'Мои файлы'}<span>{entries.length}</span></h1><p className="description">{profile?.root ? `${profile.name} / ${profile.root}` : 'Всё нужное. В одном пространстве.'}</p></div><div className="file-actions"><button className="button subtle" onClick={() => { setText(''); setPrompt({kind:'folder'}) }} disabled={profile?.provider === 'google cloud storage'} title={profile?.provider === 'google cloud storage' ? 'В GCS папки создаются загрузкой объектов с префиксом' : undefined}><FolderPlus size={17}/>Новая папка</button><details className="upload-menu"><summary className="button primary"><Upload size={17}/>Загрузить<ChevronRight size={13}/></summary><div className="dropdown"><button onClick={() => void upload(false)}><File size={16}/>Файлы</button><button onClick={() => void upload(true)}><Folder size={16}/>Папку целиком</button></div></details></div></div>
+          <div className="files-heading"><div><p className="eyebrow">{profile ? service(profile.provider).name : 'CLOUDLOOM'}</p><h1>{path.split('/').pop() || 'Мои файлы'}<span>{entries.length}</span></h1><p className="description">{profile?.root ? `${profile.name} / ${profile.root}` : 'Всё нужное. В одном пространстве.'}</p></div>{readOnly ? <p className="description">Только чтение</p> : <div className="file-actions"><button className="button subtle" onClick={() => { setText(''); setPrompt({kind:'folder'}) }} disabled={profile?.provider === 'google cloud storage'} title={profile?.provider === 'google cloud storage' ? 'В GCS папки создаются загрузкой объектов с префиксом' : undefined}><FolderPlus size={17}/>Новая папка</button><details className="upload-menu"><summary className="button primary"><Upload size={17}/>Загрузить<ChevronRight size={13}/></summary><div className="dropdown"><button onClick={() => void upload(false)}><File size={16}/>Файлы</button><button onClick={() => void upload(true)}><Folder size={16}/>Папку целиком</button></div></details></div>}</div>
           <div className="pathbar"><button disabled={!path} aria-label="На уровень выше" onClick={() => navigate(path.split('/').slice(0,-1).join('/'))}><ArrowLeft size={16}/></button><button {...dropProps('')} onDoubleClick={() => navigate('')} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); navigate('') } }}><HardDrive size={14}/>Корень</button>{path.split('/').filter(Boolean).map((part,index) => <span key={index}><ChevronRight size={13}/><button {...dropProps(path.split('/').slice(0,index+1).join('/'))} onDoubleClick={() => navigate(path.split('/').slice(0,index+1).join('/'))} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); navigate(path.split('/').slice(0,index+1).join('/')) } }}>{part}</button></span>)}</div>
           <div className="toolbar"><label className="search"><Search size={17}/><input placeholder="Поиск в этой папке" value={query} onChange={e => setQuery(e.target.value)}/><kbd>⌕</kbd></label><select aria-label="Сортировка" value={sort} onChange={e => setSort(e.target.value)}><option value="name">По имени</option><option value="date">По дате</option><option value="size">По размеру</option></select><button className="icon-button" title="Обновить" onClick={() => void reload()} disabled={loading}><RefreshCw size={17} className={loading ? 'spin' : ''}/></button><div className="view-buttons"><button aria-label="Список" className={view === 'list' ? 'active' : ''} onClick={() => setView('list')}><LayoutList size={17}/></button><button aria-label="Сетка" className={view === 'grid' ? 'active' : ''} onClick={() => setView('grid')}><Grid2X2 size={17}/></button></div></div>
           <p className="interaction-hint">Один клик — выделить · Двойной клик / Enter — открыть · Перетащите на папку или путь сверху, чтобы переместить</p>
           {moving && <div className="move-status" role="status">Перемещаем выбранное… Дождитесь завершения.</div>}
-          <div className="selection" style={{ visibility: selected.size ? 'visible' : 'hidden' }}><span>Выбрано: {selected.size}</span><button disabled={moving} onClick={() => void download(picked)}><Download size={15}/>Скачать</button><button disabled={moving} className="danger-text" onClick={() => setPrompt({kind:'delete'})}><Trash2 size={15}/>Удалить</button><button aria-label="Снять выделение" onClick={() => setSelected(new Set())}><X size={15}/></button></div>
+          <div className="selection" style={{ visibility: selected.size ? 'visible' : 'hidden' }}><span>Выбрано: {selected.size}</span><button disabled={moving} onClick={() => void download(picked)}><Download size={15}/>Скачать</button>{!readOnly && <button disabled={moving} className="danger-text" onClick={() => setPrompt({kind:'delete'})}><Trash2 size={15}/>Удалить</button>}<button aria-label="Снять выделение" onClick={() => setSelected(new Set())}><X size={15}/></button></div>
           {error && <div className="error" role="alert">{error}<button aria-label="Закрыть ошибку" onClick={() => setError('')}><X size={15}/></button></div>}
           {loading ? <div className="empty"><LoaderCircle className="spin" size={28}/><h3>Открываем ваши файлы</h3><p>Получаем содержимое хранилища…</p></div> : visible.length ? <div className={view === 'grid' ? 'file-grid' : 'file-list'}>
             {view === 'list' && <div className="list-head"><label><input aria-label="Выбрать всё" type="checkbox" checked={visible.length > 0 && visible.every(e => selected.has(e.path))} onChange={e => setSelected(e.target.checked ? new Set(visible.map(item => item.path)) : new Set())}/></label><span>Название</span><span>Изменён</span><span>Размер</span><span/></div>}
             {visible.map(entry => { const Icon = iconFor(entry)
               const sync = !entry.isDir && !explorerTransferError ? syncByPath.get(pathJoin(path, entry.path)) : undefined
               return <div {...rowProps(entry)} key={entry.path} onContextMenu={e => { e.preventDefault(); setSelected(new Set([entry.path])); const menu = e.currentTarget.querySelector('details'); if (menu) menu.open = true }}>
-              <label className="file-check"><input type="checkbox" aria-label={`Выбрать ${entry.name}`} checked={selected.has(entry.path)} onChange={() => toggle(entry)}/></label><button className="entry-name"><span className={`file-symbol ${entry.isDir ? 'folder' : Icon === Film ? 'video' : Icon === FileAudio ? 'audio' : ''}`}><Icon size={view === 'grid' ? 32 : 21}/></span><strong>{entry.name}</strong>{sync && (sync.status !== 'complete' || sync.total === entry.size) && <SyncBadge status={sync.status}/>}</button><span className="file-date">{entry.modified && !entry.modified.startsWith('0001') ? new Date(entry.modified).toLocaleDateString('ru', { day:'numeric', month:'short', year:'numeric' }) : '—'}</span><span className="file-size">{entry.isDir ? 'Папка' : formatBytes(entry.size)}</span><details className="entry-menu"><summary aria-label={`Действия: ${entry.name}`}><MoreHorizontal size={18}/></summary><div className="dropdown">{!entry.isDir && <button onClick={() => openPreview(entry)}><FileText size={15}/>Открыть</button>}{profile && shareCaps?.id === profile.id && shareCaps.value.supported && <button onClick={() => setShare({ entry, profileId: profile.id, path: pathJoin(path, entry.path), capabilities: shareCaps.value })}><ExternalLink size={15}/>Получить ссылку</button>}<button onClick={() => void download([entry])}><Download size={15}/>Скачать{entry.isDir ? ' папку' : ''}</button><button onClick={() => { setText(entry.name); setPrompt({kind:'rename',entry}) }}><Settings2 size={15}/>Переименовать</button><button className="danger-text" onClick={() => setPrompt({kind:'delete',entry})}><Trash2 size={15}/>Удалить</button></div></details>
+              <label className="file-check"><input type="checkbox" aria-label={`Выбрать ${entry.name}`} checked={selected.has(entry.path)} onChange={() => toggle(entry)}/></label><button className="entry-name"><span className={`file-symbol ${entry.isDir ? 'folder' : Icon === Film ? 'video' : Icon === FileAudio ? 'audio' : ''}`}><Icon size={view === 'grid' ? 32 : 21}/></span><strong>{entry.name}</strong>{sync && (sync.status !== 'complete' || sync.total === entry.size) && <SyncBadge status={sync.status}/>}</button><span className="file-date">{entry.modified && !entry.modified.startsWith('0001') ? new Date(entry.modified).toLocaleDateString('ru', { day:'numeric', month:'short', year:'numeric' }) : '—'}</span><span className="file-size">{entry.isDir ? 'Папка' : formatBytes(entry.size)}</span><details className="entry-menu"><summary aria-label={`Действия: ${entry.name}`}><MoreHorizontal size={18}/></summary><div className="dropdown">{!entry.isDir && <button onClick={() => openPreview(entry)}><FileText size={15}/>Открыть</button>}{profile && shareCaps?.id === profile.id && shareCaps.value.supported && <button onClick={() => setShare({ entry, profileId: profile.id, path: pathJoin(path, entry.path), capabilities: shareCaps.value })}><ExternalLink size={15}/>Получить ссылку</button>}<button onClick={() => void download([entry])}><Download size={15}/>Скачать{entry.isDir ? ' папку' : ''}</button>{!readOnly && <><button onClick={() => { setText(entry.name); setPrompt({kind:'rename',entry}) }}><Settings2 size={15}/>Переименовать</button><button className="danger-text" onClick={() => setPrompt({kind:'delete',entry})}><Trash2 size={15}/>Удалить</button></>}</div></details>
             </div> })}
-          </div> : <div className="empty"><div className="empty-icon"><Folder size={34}/></div><h3>{query ? 'Ничего не найдено' : 'Здесь пока пусто'}</h3><p>{query ? 'Попробуйте другой поисковый запрос.' : 'Загрузите файлы или перетащите сюда папку.'}</p>{!query && <button className="button subtle" onClick={() => void upload(false)}><Plus size={16}/>Добавить файлы</button>}</div>}
+          </div> : <div className="empty"><div className="empty-icon"><Folder size={34}/></div><h3>{query ? 'Ничего не найдено' : 'Здесь пока пусто'}</h3><p>{query ? 'Попробуйте другой поисковый запрос.' : readOnly ? 'В каталоге нет доступных файлов.' : 'Загрузите файлы или перетащите сюда папку.'}</p>{!query && !readOnly && <button className="button subtle" onClick={() => void upload(false)}><Plus size={16}/>Добавить файлы</button>}</div>}
           <footer className="file-footer"><span>{visible.length} элементов{selected.size ? ` · Выбрано ${selected.size}` : ''}</span><span><Cloud size={13}/>Обновлено с сервиса</span></footer>
         </section>}
         {showTransfers && <section className="files-content transfer-page" aria-label="Передачи">
           <div className="files-heading"><div><h1>Передачи</h1><p className="description">Загрузки и скачивания в Cloudloom и отправка файлов с дисков Проводника.</p></div></div>
+          <div className="transfer-views" role="group" aria-label="Список передач">
+            <button className="button subtle" aria-pressed={!showHistory} onClick={() => setTransferView('current')}>Текущие{transferCount > 0 && ` · ${transferCount}`}</button>
+            <button className="button subtle" aria-pressed={showHistory} onClick={() => setTransferView('history')}>История</button>
+          </div>
           {error && <div className="error" role="alert">{error}<button aria-label="Закрыть ошибку" onClick={() => setError('')}><X size={15}/></button></div>}
           <section className="transfers">
             <header><span><ArrowUpToLine size={17}/>Из приложения</span></header>
-            {tasks.length ? <div className="transfer-items">{tasks.map(task => {
+            {visibleAppTasks.length ? <div className="transfer-items">{visibleAppTasks.map(task => {
               const running = task.status === 'active' || task.status === 'queued'
               return <div className={`transfer ${task.status}`} key={task.id}>
                 <div className="transfer-direction">{task.direction === 'upload' ? <ArrowUpToLine size={18}/> : <ArrowDownToLine size={18}/>}</div>
                 <div className="transfer-info">
                   <strong>{task.name}</strong>
+                  <Destination path={task.destination}/>
+                  {task.finishedAt && <small>{new Date(task.finishedAt).toLocaleString('ru-RU')}</small>}
                   <small>{statusText[task.status]}{task.total > 0 && ` · ${formatBytes(task.bytes)} / ${formatBytes(task.total)}`}{task.speed > 0 && ` · ${formatBytes(task.speed)}/с`}</small>
                   {task.status === 'active' && <progress max={task.total || 1} value={task.bytes}/>}
                   {task.error && <p>{task.error}</p>}
@@ -400,16 +445,18 @@ export default function App() {
                   <button title="Убрать из истории" aria-label={`Убрать из истории: ${task.name}`} onClick={() => void dismissTransfer(task)}><X size={15}/></button>
                 </>}
               </div>
-            })}</div> : <div className="no-transfers">В приложении пока нет передач.</div>}
+            })}</div> : <div className="no-transfers">{showHistory ? 'История передач из приложения пуста.' : 'В приложении нет текущих передач.'}</div>}
           </section>
           <section className="transfers">
             <header><span><HardDrive size={17}/>Из Проводника</span></header>
-            {explorerTransferError ? <div className="no-transfers" role="status">Не удалось обновить очередь. Cloudloom повторит проверку.</div> :
+            {!showHistory && explorerTransferError ? <div className="no-transfers" role="status">Не удалось обновить очередь. Cloudloom повторит проверку.</div> :
               visibleExplorerTransfers.length ? <div className="transfer-items">{visibleExplorerTransfers.map(task =>
-                <div className={`transfer ${task.status}`} key={JSON.stringify([task.profileId, task.path])}>
+                <div className={`transfer ${task.status}`} key={explorerHistoryKey(task)}>
                   <div className="transfer-direction"><SyncBadge status={task.status}/></div>
                   <div className="transfer-info">
                     <strong title={task.path}>{task.letter}: / {task.path}</strong>
+                    <Destination path={task.destination ?? `${task.letter}: / ${task.path}`}/>
+                    {task.completedAt && <small>{new Date(task.completedAt).toLocaleString('ru-RU')}</small>}
                     <small>
                       {task.status === 'active' && task.total > 0 && task.bytes === task.total ? 'Ожидает подтверждения сервера' : explorerStatus[task.status]}
                       {task.status === 'active' ? ` · ${formatBytes(task.bytes)} / ${formatBytes(task.total)}` : ` · ${formatBytes(task.total)}`}
@@ -419,10 +466,10 @@ export default function App() {
                   {task.completedAt && <button
                     title="Убрать из истории"
                     aria-label={`Убрать из истории: ${task.path}`}
-                    onClick={() => setHiddenExplorerHistory(history => new Set(history).add(explorerHistoryKey(task)))}
+                    onClick={() => dismissExplorerHistory(task)}
                   ><X size={15}/></button>}
                 </div>
-              )}</div> : <div className="no-transfers">На подключённых дисках нет передач.</div>}
+              )}</div> : <div className="no-transfers">{showHistory ? 'История передач из Проводника пуста.' : 'На подключённых дисках нет текущих передач.'}</div>}
           </section>
         </section>}
       </main>
@@ -430,7 +477,7 @@ export default function App() {
 
     {choose && <div className="profile-overlay" inert={explorer || generalSettings || undefined} aria-hidden={explorer || generalSettings || undefined}><div className="ambient ambient-one"/><div className="ambient ambient-two"/><div className="selector-top"><Brand/><div className="header-buttons">{desktop && <button className="round" aria-label="Общие настройки" title="Общие настройки" onClick={() => void openSettings()}><Settings2 size={18}/></button>}<button className="round" aria-label="Переключить тему" onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={18}/> : <Moon size={18}/>}</button></div></div><div className="welcome-title"><span className="welcome-tag"><i/>{liveUI.ui.tagline}</span><h1>{liveUI.ui.welcomeTitle}<br/><em>{liveUI.ui.welcomeEmphasis}</em></h1><p>{liveUI.ui.subtitle}</p><button className="button subtle explorer-entry" onClick={() => setExplorer(true)}><HardDrive size={16}/>Диски в Проводнике</button><button className="button subtle explorer-entry" onClick={openTransfers}><ArrowUpToLine size={16}/>Передачи{transferCount > 0 && ` · ${transferCount}`}</button></div>
       <div className="profile-picker" role="dialog" aria-label="Выбор профиля">
-        <section className="saved-profiles"><div className="picker-heading"><Users size={17}/><h2>Мои профили</h2><span>{profiles.length}</span></div><p className="picker-description">Продолжите с нужным аккаунтом</p><div className="profile-cards">{profiles.length ? profiles.map(p => <div className="saved-profile" key={p.id}><button className="profile-open" {...choiceProps(`profile:${p.id}`)} onDoubleClick={() => enter(p)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); enter(p) } }}><ServiceIcon id={p.provider}/><span><strong>{p.name}</strong><small>{service(p.provider).name}{p.root ? ` · ${p.root}` : ''}</small></span><ChevronRight size={17}/></button><button className="profile-mount" title="Добавить в Проводник" aria-label={`В Проводник: ${p.name}`} onClick={() => mountProfile(p.id)}><HardDrive size={15}/></button><button className="disconnect" title="Отключить профиль" aria-label={`Отключить ${p.name}`} onClick={() => void disconnect(p)}><LogOut size={13}/></button></div>) : <div className="no-profiles"><div><Cloudy size={31}/></div><h3>Здесь будут ваши профили</h3><p>Подключите сервис справа.<br/>В следующий раз аккаунт будет ждать вас здесь.</p></div>}</div><button className="new-profile" onClick={() => { setServiceQuery(''); document.getElementById('service-search')?.focus() }}><Plus size={19}/><span>Добавить профиль</span></button><div className="picker-security"><span className="lock-dot"/>OAuth-вход или ключи вашего сервиса.<br/>Учётные данные зашифрованы на компьютере.</div></section>
+        <section className="saved-profiles"><div className="picker-heading"><Users size={17}/><h2>Мои профили</h2><span>{profiles.length}</span></div><p className="picker-description">Продолжите с нужным аккаунтом</p><div className="profile-cards">{profiles.length ? profiles.map(p => <div className="saved-profile" key={p.id}><button className="profile-open" {...choiceProps(`profile:${p.id}`)} onDoubleClick={() => enter(p)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); enter(p) } }}><ServiceIcon id={p.provider}/><span><strong>{p.name}</strong><small>{service(p.provider).name}{p.root ? ` · ${p.root}` : ''}</small></span><ChevronRight size={17}/></button> {p.provider !== 'http' && <button className="profile-mount" title="Добавить в Проводник" aria-label={`В Проводник: ${p.name}`} onClick={() => mountProfile(p.id)}><HardDrive size={15}/></button>}<button className="disconnect" title="Отключить профиль" aria-label={`Отключить ${p.name}`} onClick={() => void disconnect(p)}><LogOut size={13}/></button></div>) : <div className="no-profiles"><div><Cloudy size={31}/></div><h3>Здесь будут ваши профили</h3><p>Подключите сервис справа.<br/>В следующий раз аккаунт будет ждать вас здесь.</p></div>}</div><button className="new-profile" onClick={() => { setServiceQuery(''); document.getElementById('service-search')?.focus() }}><Plus size={19}/><span>Добавить профиль</span></button><div className="picker-security"><span className="lock-dot"/>OAuth-вход или ключи вашего сервиса.<br/>Учётные данные зашифрованы на компьютере.</div></section>
         <section className="available-services" id="services"><div className="picker-heading"><Cloud size={17}/><h2>Подключить хранилище</h2><span>{providers.length}</span></div><label className="service-search"><Search size={14}/><input id="service-search" aria-label="Найти сервис" placeholder="Найти сервис…" value={serviceQuery} onChange={e => setServiceQuery(e.target.value)}/>{serviceQuery && <button aria-label="Сбросить поиск сервисов" onClick={() => setServiceQuery('')}><X size={13}/></button>}</label><div className="services">{providers.filter(p => `${p.name} ${p.description}`.toLocaleLowerCase().includes(serviceQuery.toLocaleLowerCase().trim())).map(p => <button className="service-option" key={p.id} {...choiceProps(`service:${p.id}`)} onDoubleClick={() => selectService(p.id)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); selectService(p.id) } }}><ServiceIcon id={p.id}/><span><strong>{p.name}</strong><small>{p.description}</small></span><Plus size={17}/></button>)}{!providers.some(p => `${p.name} ${p.description}`.toLocaleLowerCase().includes(serviceQuery.toLocaleLowerCase().trim())) && <p className="service-empty" role="status">Сервис не найден. Попробуйте другое название.</p>}</div></section>
       </div><div className="welcome-footer"><span>Cloudloom {releaseName}</span><button className="live-ui-check" onClick={() => void liveUI.check()} disabled={liveUI.checking} title={`${liveUI.status} · каталог ${liveUI.revision}`}><RefreshCw size={11} className={liveUI.checking ? 'spin' : ''}/>{liveUI.checking ? 'Проверяем интерфейс…' : 'Проверить интерфейс'}</button><span>Файлы не проходят через наши серверы</span></div>{monthlyDownloads !== null && <small
         className="monthly-downloads"
@@ -475,11 +522,11 @@ export default function App() {
       </form>}
     </div></div>}
     {prompt && <div className="modal-backdrop"><form className="modal action-modal" role="dialog" aria-modal="true" onSubmit={e => { e.preventDefault(); void submitAction() }}><button type="button" className="modal-close" aria-label="Закрыть диалог" disabled={actionBusy} onClick={() => setPrompt(null)}><X size={18}/></button><h2>{prompt.kind === 'folder' ? 'Новая папка' : prompt.kind === 'rename' ? 'Переименовать' : 'Удалить выбранное?'}</h2>{prompt.kind === 'delete' ? <p className="modal-subtitle">{prompt.entry ? prompt.entry.name : `${picked.length} элементов`}. Папки удаляются вместе со всем содержимым. Восстановление зависит от сервиса.</p> : <label>Название<input autoFocus required value={text} onChange={e => setText(e.target.value)}/></label>}<div className="dialog-actions"><button type="button" className="button subtle" disabled={actionBusy} onClick={() => setPrompt(null)}>Отмена</button><button className={`button ${prompt.kind === 'delete' ? 'danger' : 'primary'}`} disabled={actionBusy || (prompt.kind !== 'delete' && !text.trim())}>{actionBusy && <LoaderCircle size={15} className="spin"/>}{prompt.kind === 'delete' ? 'Удалить' : 'Сохранить'}</button></div>{error && <p className="error">{error}</p>}</form></div>}
-    {dragging && !choose && !preview && !share && !prompt && !moving && !explorer && <div className="drop-overlay"><Upload size={40}/><h2>Отпустите, чтобы загрузить</h2><p>Файлы и папки попадут в текущую папку</p></div>}
+    {dragging && !readOnly && !choose && !preview && !share && !prompt && !moving && !explorer && <div className="drop-overlay"><Upload size={40}/><h2>Отпустите, чтобы загрузить</h2><p>Файлы и папки попадут в текущую папку</p></div>}
     {drag && <div className="drag-ghost" style={{ left: Math.min(drag.x + 16, window.innerWidth - 260), top: Math.min(drag.y + 16, window.innerHeight - 90) }}>Переместить: {drag.sources.length}<small>{drag.destination !== null ? `В папку: ${drag.destination || 'Корень'}` : 'Наведите на папку или путь сверху · Esc — отмена'}</small></div>}
-    {preview && <FilePreview profileId={preview.profileId} remotePath={preview.remotePath} entry={preview.entry} onClose={() => setPreview(null)} onSaved={() => { void reload(); setProfiles(items => [...items]) }} onDownload={() => void download([preview.entry])}/>}
+    {preview && <FilePreview readOnly={preview.readOnly} profileId={preview.profileId} remotePath={preview.remotePath} entry={preview.entry} onClose={() => setPreview(null)} onSaved={() => { void reload(); setProfiles(items => [...items]) }} onDownload={() => void download([preview.entry])}/>}
     {share && <ShareDialog profileId={share.profileId} path={share.path} entry={share.entry} capabilities={share.capabilities} onClose={() => setShare(null)}/>}
-    <ExplorerDisks ref={explorerPanel} profiles={profiles} open={explorer} onClose={() => setExplorer(false)}/>
+    <ExplorerDisks ref={explorerPanel} profiles={profiles.filter(p => p.provider !== 'http')} open={explorer} onClose={() => setExplorer(false)}/>
     {toast && <div className="toast" role="status"><Check size={16}/>{toast}</div>}
   </div>
 }

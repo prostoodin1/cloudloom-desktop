@@ -323,7 +323,10 @@ fn dirty_files(root: &Path) -> Result<u64, String> {
     }
     Ok(dirty)
 }
-fn supported(_profile: &Profile) -> Result<(), String> {
+fn supported(profile: &Profile) -> Result<(), String> {
+    if profile.provider == "http" {
+        return Err("HTTPS-папки открываются в Cloudloom".into());
+    }
     if !cfg!(windows) {
         return Err("Подключение в Проводник доступно только в Windows".into());
     }
@@ -607,6 +610,7 @@ pub(crate) struct ExplorerTransfer {
     bytes: u64,
     total: u64,
     completed_at: Option<String>,
+    destination: Option<String>,
 }
 
 async fn session_transfers(
@@ -630,6 +634,7 @@ async fn session_transfers(
         bytes,
         total,
         completed_at,
+        destination: None,
     };
     for item in history["transferred"].as_array().into_iter().flatten() {
         if item["checked"] != false || item["what"] != "transferring" {
@@ -685,6 +690,7 @@ async fn session_transfers(
 
 #[tauri::command]
 pub(crate) async fn explorer_transfers(
+    engine: State<'_, Engine>,
     mounts: State<'_, Mounts>,
 ) -> Result<Vec<ExplorerTransfer>, String> {
     let inner = mounts.inner.lock().await;
@@ -701,6 +707,15 @@ pub(crate) async fn explorer_transfers(
     let mut rows = Vec::new();
     for snapshot in snapshots {
         rows.extend(snapshot?);
+    }
+    for row in &mut rows {
+        if let Ok(profile) = engine.profile(&row.profile_id)
+            && let Ok(target) = remote(&profile, &row.path)
+        {
+            row.destination = target
+                .strip_prefix("storage:")
+                .map(|path| format!("{} · /{path}", profile.name));
+        }
     }
     #[cfg(windows)]
     platform::publish_sync_badges(&rows);
